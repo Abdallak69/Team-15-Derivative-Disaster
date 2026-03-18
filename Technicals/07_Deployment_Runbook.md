@@ -19,7 +19,7 @@
 1. Open browser → https://aws.amazon.com
 2. Navigate to AWS Access Portal (link from the email)
 3. Click "Hackathon Permission Set"
-4. Region: ap-southeast-1 (Singapore) ← VERIFY THIS
+4. Region: ap-southeast-2 (Sydney) ← VERIFIED
 5. EC2 → Launch Templates → select the provided template
 6. Click "Launch instance from template"
 7. Do NOT create a key pair (Session Manager only)
