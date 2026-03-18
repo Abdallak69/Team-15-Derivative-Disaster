@@ -1,7 +1,7 @@
 # Strategy Research & Selection
 ## SG vs HK University Web3 Quant Trading Hackathon
 
-**Team:** Abdalla (Lead), Sami, Oscar, Wilson
+**Team:** TBC (Lead), TBC, TBC, TBC
 **Date Prepared:** 18 March 2026
 
 ---

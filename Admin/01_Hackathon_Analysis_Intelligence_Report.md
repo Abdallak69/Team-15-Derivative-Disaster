@@ -1,7 +1,7 @@
 # Hackathon Analysis & Intelligence Report
 ## SG vs HK University Web3 Quant Trading Hackathon — Roostoo
 
-**Team:** Abdalla (Lead), Sami, Oscar, Wilson
+**Team:** TBC (Lead), TBC, TBC, TBC
 **Date Prepared:** 18 March 2026
 **Classification:** Internal — Do Not Share
 

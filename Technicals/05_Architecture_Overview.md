@@ -1,7 +1,7 @@
 # Architecture Overview
 ## SG vs HK University Web3 Quant Trading Hackathon
 
-**Team:** Abdalla (Lead), Sami, Oscar, Wilson
+**Team:** TBC (Lead), TBC, TBC, TBC
 **Date Prepared:** 18 March 2026
 
 ---
@@ -15,12 +15,12 @@ roostoo-quant-bot/
 │   ├── __init__.py
 │   ├── main.py                    # Entry point — initialises all modules, runs main loop
 │   │
-│   ├── api/                       # Roostoo API interface (Owner: Sami)
+│   ├── api/                       # Roostoo API interface (Owner: TBC)
 │   │   ├── __init__.py
 │   │   ├── auth.py                # HMAC SHA256 signature generation, timestamp management
 │   │   └── roostoo_client.py      # Wrapper for all 8 API endpoints with retry logic
 │   │
-│   ├── data/                      # Data ingestion and storage (Owner: Sami)
+│   ├── data/                      # Data ingestion and storage (Owner: TBC)
 │   │   ├── __init__.py
 │   │   ├── ohlcv_store.py         # sqlite interface: insert, query, prune old data
 │   │   ├── ticker_poller.py       # Polls /v3/ticker every 60s, writes to ohlcv_store
@@ -28,29 +28,29 @@ roostoo-quant-bot/
 │   │   ├── sentiment_fetcher.py   # Fetches Fear & Greed Index, Binance funding rates
 │   │   └── universe_builder.py    # Calls /v3/exchangeInfo, builds tradeable asset list
 │   │
-│   ├── signals/                   # Signal generation modules (Owner: Oscar)
+│   ├── signals/                   # Signal generation modules (Owner: TBC)
 │   │   ├── __init__.py
 │   │   ├── momentum.py            # Cross-sectional momentum ranking
 │   │   ├── mean_reversion.py      # RSI/Bollinger Band oversold detection
 │   │   ├── pairs_rotation.py      # Cointegration-based capital rotation
 │   │   └── sector_rotation.py     # BTC dominance-driven sector allocation
 │   │
-│   ├── strategy/                  # Strategy orchestration (Owner: Abdalla)
+│   ├── strategy/                  # Strategy orchestration (Owner: TBC)
 │   │   ├── __init__.py
 │   │   ├── regime_detector.py     # Bull/Ranging/Bear classification
 │   │   ├── ensemble.py            # Combines signals with regime-dependent weights
 │   │   └── portfolio_optimizer.py # Inverse-vol weighting, Kelly constraint, cash floor
 │   │
-│   ├── risk/                      # Risk management (Owner: Wilson)
+│   ├── risk/                      # Risk management (Owner: TBC)
 │   │   ├── __init__.py
 │   │   ├── risk_manager.py        # Per-position stop-losses, daily loss limits
 │   │   └── circuit_breaker.py     # Portfolio-level drawdown circuit breakers
 │   │
-│   ├── execution/                 # Order execution (Owner: Wilson)
+│   ├── execution/                 # Order execution (Owner: TBC)
 │   │   ├── __init__.py
 │   │   └── order_executor.py      # Translates target weights → API orders (limit preferred)
 │   │
-│   └── monitoring/                # Alerting and metrics (Owner: Wilson)
+│   └── monitoring/                # Alerting and metrics (Owner: TBC)
 │       ├── __init__.py
 │       ├── telegram_alerter.py    # Push notifications via Telegram Bot API
 │       └── metrics_tracker.py     # Real-time Sharpe, Sortino, Calmar computation

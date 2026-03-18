@@ -1,7 +1,7 @@
 # Best Practices Manual
 ## SG vs HK University Web3 Quant Trading Hackathon
 
-**Team:** Abdalla (Lead), Sami, Oscar, Wilson
+**Team:** TBC (Lead), TBC, TBC, TBC
 **Date Prepared:** 18 March 2026
 **Status:** MANDATORY — all team members must read and follow every item below.
 
@@ -213,7 +213,7 @@ execution:
 
 **Switching keys:** `cp .env.competition .env && sudo systemctl restart tradingbot`
 
-**Pre-flight check before Round 1:** Verify the `.env` file contains competition keys, not testing keys. Abdalla and Wilson both independently verify.
+**Pre-flight check before Round 1:** Verify the `.env` file contains competition keys, not testing keys. TBC and TBC both independently verify.
 
 ### 3.3 Key Rotation Emergency
 
@@ -332,7 +332,7 @@ git tag -a v1.X-description -m "Description of changes"
 git push --tags
 ```
 
-**Never deploy during active trading hours without Abdalla's approval** (unless it's an emergency hotfix for a crashed bot).
+**Never deploy during active trading hours without TBC's approval** (unless it's an emergency hotfix for a crashed bot).
 
 ### 4.4 Health Monitoring Commands
 
@@ -508,7 +508,7 @@ This must run **every cycle** — missing an update means the max drawdown calcu
 ### 7.3 Emergency Procedures
 
 **Bot crash (detected via missing Telegram heartbeat):**
-1. Wilson connects to EC2 via Session Manager
+1. TBC connects to EC2 via Session Manager
 2. Check status: `sudo systemctl status tradingbot.service`
 3. If failed: check logs `tail -50 logs/system.log`
 4. If OOM: check memory `free -h`; consider reducing data buffer sizes
@@ -529,7 +529,7 @@ This must run **every cycle** — missing an update means the max drawdown calcu
 2. If not, investigate: was it a legitimate market move or a bot bug?
 3. If bug: stop bot, fix, redeploy
 4. If market move: evaluate whether to override circuit breaker timing
-5. Abdalla makes final call on whether to resume or stay in cash
+5. TBC makes final call on whether to resume or stay in cash
 
 ---
 
@@ -575,17 +575,17 @@ def test_hmac_signature():
 
 | Decision Type | Who Decides | Who is Informed |
 |---|---|---|
-| Strategy parameter change | Oscar proposes → Abdalla approves | All |
-| Emergency stop/restart | Wilson acts → informs Abdalla within 15 min | All |
-| New module addition | Abdalla decides after team discussion | All |
-| Budget/risk limit change | Abdalla only | All |
+| Strategy parameter change | TBC proposes → TBC approves | All |
+| Emergency stop/restart | TBC acts → informs TBC within 15 min | All |
+| New module addition | TBC decides after team discussion | All |
+| Budget/risk limit change | TBC only | All |
 | Git merge to `main` | Any 1 reviewer approves | All |
-| Deployment to EC2 | Wilson executes, Abdalla authorises | All |
+| Deployment to EC2 | TBC executes, TBC authorises | All |
 
 ### 9.2 Escalation Protocol
 
 If anything seems wrong and the primary owner is unreachable for **30+ minutes** during competition hours:
-1. The next person in the chain of command acts: Abdalla → Wilson → Sami → Oscar
+1. The next person in the chain of command acts: TBC → TBC → TBC → TBC
 2. The acting person makes the conservative choice (reduce risk, not increase it)
 3. Document the decision and reasoning in WhatsApp
 

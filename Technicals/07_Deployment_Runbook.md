@@ -1,10 +1,10 @@
 # Deployment Runbook & Go-Live Checklist
 ## SG vs HK University Web3 Quant Trading Hackathon
 
-**Team:** Abdalla (Lead), Sami, Oscar, Wilson
+**Team:** TBC (Lead), TBC, TBC, TBC
 **Date Prepared:** 18 March 2026
-**Primary Deployer:** Wilson
-**Authoriser:** Abdalla
+**Primary Deployer:** TBC
+**Authoriser:** TBC
 
 ---
 
@@ -181,7 +181,7 @@ tail -20 logs/system.log
 
 **Estimated time: 20 minutes**
 **When:** Evening before Round 1 starts (16 March evening)
-**Who:** Wilson (executes) + Abdalla (verifies independently)
+**Who:** TBC (executes) + TBC (verifies independently)
 
 ### B1. System Health Check
 
@@ -289,7 +289,7 @@ git tag -l
 **⚡ THIS IS THE CRITICAL SECTION ⚡**
 **Estimated time: 10 minutes**
 **When:** Competition start time (as announced by organisers)
-**Who:** Wilson (executes), Abdalla (verifies over screen share)
+**Who:** TBC (executes), TBC (verifies over screen share)
 
 ### C1. Stop the Bot
 
@@ -313,10 +313,10 @@ cp .env.competition .env
 
 # VERIFY — read the first line of the API key
 head -3 .env
-# Abdalla: confirm this matches the competition key from the email
+# TBC: confirm this matches the competition key from the email
 ```
 
-**⚠️ DUAL VERIFICATION:** Both Wilson and Abdalla must independently confirm the API key in `.env` matches the competition API key from the organiser's email. Do not proceed until both confirm.
+**⚠️ DUAL VERIFICATION:** Both TBC and TBC must independently confirm the API key in `.env` matches the competition API key from the organiser's email. Do not proceed until both confirm.
 
 ### C3. Start the Bot
 
@@ -366,14 +366,14 @@ Monitoring active. Next check: 1 hour."
 
 **When:** Any time a strategy change is needed during the 10-day competition
 **Estimated time: 10 minutes**
-**Who:** Wilson (executes), Abdalla (authorises)
+**Who:** TBC (executes), TBC (authorises)
 
 ### D1. Pre-Deployment
 
 ```bash
-# 1. Abdalla approves the change (WhatsApp confirmation)
+# 1. TBC approves the change (WhatsApp confirmation)
 # 2. Code is merged to main via PR (or direct push for hotfix)
-# 3. Wilson connects to EC2 via Session Manager
+# 3. TBC connects to EC2 via Session Manager
 
 cd /opt/trading-bot
 source venv/bin/activate
@@ -499,7 +499,7 @@ sudo systemctl start tradingbot.service
 3. If L1 fired: bot reduced positions by 50%. Monitor for recovery.
 4. If L2 fired: bot sold everything and paused 24h. Consider:
    a. Wait for the 24h pause to expire (default)
-   b. Manually override by restarting the bot (only if Abdalla approves)
+   b. Manually override by restarting the bot (only if TBC approves)
 5. Analyse: was this a market crash or a bot bug?
    - Market crash: circuit breaker working as designed. Wait.
    - Bot bug: stop, fix, redeploy (Section D).
@@ -559,10 +559,10 @@ DATE: ___________  CHECKED BY: ___________
 | EC2 instance type | T3.medium (2 vCPU, 4GB RAM) |
 | GitHub repo | `https://github.com/<TEAM_ORG>/roostoo-quant-bot` |
 | Telegram bot | @<BOT_NAME> |
-| Abdalla (lead) | [phone number] |
-| Wilson (infra) | [phone number] |
-| Sami (data) | [phone number] |
-| Oscar (signals) | [phone number] |
+| TBC (lead) | [phone number] |
+| TBC (infra) | [phone number] |
+| TBC (data) | [phone number] |
+| TBC (signals) | [phone number] |
 
 ---
 
