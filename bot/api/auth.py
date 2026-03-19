@@ -6,9 +6,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import hashlib
 import hmac
-import os
 import time
 from typing import Any
+
+from bot.environment import SecretConfigurationError
+from bot.environment import load_secret_from_env
 
 
 API_KEY_HEADER = "RST-API-KEY"
@@ -23,12 +25,32 @@ class AuthCredentials:
     secret_key: str
 
     @classmethod
-    def from_env(cls) -> AuthCredentials | None:
+    def from_env(cls, *, required: bool = False) -> AuthCredentials | None:
         """Build credentials from environment variables when available."""
-        api_key = os.getenv("ROOSTOO_API_KEY")
-        secret_key = os.getenv("ROOSTOO_SECRET_KEY")
-        if not api_key or not secret_key:
+        api_key = load_secret_from_env("ROOSTOO_API_KEY")
+        secret_key = load_secret_from_env("ROOSTOO_SECRET_KEY")
+
+        if api_key is None and secret_key is None:
+            if required:
+                raise SecretConfigurationError(
+                    "ROOSTOO_API_KEY and ROOSTOO_SECRET_KEY must be set in .env"
+                )
             return None
+
+        missing = [
+            name
+            for name, value in (
+                ("ROOSTOO_API_KEY", api_key),
+                ("ROOSTOO_SECRET_KEY", secret_key),
+            )
+            if value is None
+        ]
+        if missing:
+            missing_list = ", ".join(missing)
+            raise SecretConfigurationError(
+                f"Incomplete secret configuration; missing {missing_list}"
+            )
+
         return cls(api_key=api_key, secret_key=secret_key)
 
 

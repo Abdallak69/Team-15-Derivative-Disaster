@@ -3,6 +3,7 @@
 
 **Team:** TBC (Lead), TBC, TBC, TBC
 **Date Prepared:** 18 March 2026
+**Positioning:** This document describes the intended end-product strategy mathematics. Current implementation status lives in `docs/TEAM_UPDATE.md`; current operational guidance lives in `docs/03_operations_runbook.md`.
 
 ---
 

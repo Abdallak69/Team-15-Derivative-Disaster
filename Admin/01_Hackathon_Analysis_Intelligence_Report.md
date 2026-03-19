@@ -167,7 +167,7 @@ Aggregate average return of each city's 8 finalist teams.
 | vCPUs | 2 (burstable, 20% baseline per vCPU) |
 | RAM | **4 GiB** |
 | CPU credits | 24 earned/hour, 576 max balance |
-| Region | **ap-southeast-1 (Singapore)** |
+| Region | **ap-southeast-2 (Sydney)** |
 | Connection | **Session Manager only** (no SSH, no key pair) |
 | Limit | **1 instance per team** (additional instances auto-terminated) |
 | Template | Pre-configured launch template provided |

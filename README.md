@@ -2,17 +2,20 @@
 
 Repository for the SG vs HK University Web3 Quant Trading Hackathon trading bot.
 
-The single team update document lives at `docs/TEAM_UPDATE.md`.
+The files in `Technicals/` describe the target end product.
+The current operational source of truth lives at `docs/03_operations_runbook.md`.
+The current implementation status lives at `docs/TEAM_UPDATE.md`.
 
 ## Current implementation
 
-The first working vertical slice is the market data pipeline:
+The current working slice is the market data and operations runtime:
 
 - Roostoo request signing and clock-sync helpers
 - `/v3/exchangeInfo` universe discovery
 - `/v3/ticker` polling
+- signed balance and pending-order reconciliation
 - local sqlite persistence of ticker-derived 1-minute candles
-- a single-process scheduler in `bot.main`
+- a single-process scheduler in `bot.main` for polling, reconciliation, heartbeats, and clock sync
 
 The initial import milestone is still satisfied:
 
@@ -36,9 +39,10 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
+cat docs/03_operations_runbook.md
 cat docs/TEAM_UPDATE.md
 python -m bot.main --status
-python -m unittest discover
+pytest tests -q
 ```
 
 After I replace the placeholder values in `.env` with real testing keys, I run:
@@ -49,6 +53,8 @@ python -m bot.main --startup-check
 
 ## Notes
 
-- `python -m bot.main --startup-check` exercises the real bootstrap path once, including clock sync and universe loading, then exits.
+- `Technicals/` documents the intended end-state bot, not just the currently implemented slice.
+- `docs/03_operations_runbook.md` is the operational contract new code and deploy procedures should follow.
+- `python -m bot.main --startup-check` exercises the real bootstrap path once, including clock sync, universe loading, and signed-state reconciliation, then exits.
 - `python -m bot.main` starts the long-running polling loop used by the systemd service.
-- Trading logic modules outside the data pipeline are still lightweight placeholders and should not be treated as production-ready yet.
+- Trading decision and execution modules are still lightweight placeholders and should not be treated as production-ready yet.

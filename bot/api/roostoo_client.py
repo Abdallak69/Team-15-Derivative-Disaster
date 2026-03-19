@@ -5,9 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
+import logging
 from typing import Any
 
 import requests
+from tenacity import before_sleep_log
 from tenacity import retry
 from tenacity import retry_if_exception_type
 from tenacity import stop_after_attempt
@@ -29,6 +31,8 @@ DEFAULT_ENDPOINTS = {
     "server_time": "/v3/serverTime",
     "ticker": "/v3/ticker",
 }
+
+LOGGER = logging.getLogger("tradingbot.system")
 
 
 class ApiError(RuntimeError):
@@ -67,6 +71,7 @@ class RoostooClient:
         retry=retry_if_exception_type(
             (requests.ConnectionError, requests.Timeout, TransientRequestError)
         ),
+        before_sleep=before_sleep_log(LOGGER, logging.WARNING),
         reraise=True,
     )
     def _request_json(
@@ -126,6 +131,11 @@ class RoostooClient:
         self.clock_offset_ms = server_time_ms - local_midpoint_ms
         return server_time_ms
 
+    def get_server_time(self) -> int:
+        """Return the current server time without mutating the local clock offset."""
+        payload = self._request_json("GET", "server_time")
+        return self._extract_server_time(payload)
+
     def get_exchange_info(self) -> list[dict[str, Any]]:
         """Return the normalized exchange info records."""
         payload = self._request_json("GET", "exchange_info")
@@ -140,6 +150,85 @@ class RoostooClient:
             params["pair"] = pair
         payload = self._request_json("GET", "ticker", params=params)
         return self._extract_records(payload)
+
+    def get_balance(self) -> dict[str, Any]:
+        """Return the current account balances from the signed balance endpoint."""
+        payload = self._request_json(
+            "GET",
+            "balance",
+            params=self._signed_payload(),
+            signed=True,
+        )
+        data = self._unwrap_payload(payload)
+        if isinstance(data, Mapping):
+            return dict(data)
+        raise ApiError("Unable to parse balance response.")
+
+    def get_pending_count(self, pair: str | None = None) -> Any:
+        """Return the pending-order count payload from the signed endpoint."""
+        params = self._signed_payload({"pair": pair} if pair else None)
+        payload = self._request_json(
+            "GET",
+            "pending_count",
+            params=params,
+            signed=True,
+        )
+        return self._unwrap_payload(payload)
+
+    def place_order(
+        self,
+        *,
+        pair: str,
+        side: str,
+        order_type: str,
+        quantity: float,
+        price: float | None = None,
+    ) -> Any:
+        """Place a signed order via the Roostoo API."""
+        data = self._signed_payload(
+            {
+                "pair": pair,
+                "side": side,
+                "type": order_type,
+                "quantity": quantity,
+                "price": price,
+            }
+        )
+        return self._request_json("POST", "place_order", data=data, signed=True)
+
+    def query_order(
+        self,
+        *,
+        order_id: int | None = None,
+        pair: str | None = None,
+        pending_only: bool | None = None,
+    ) -> Any:
+        """Query signed order history or pending orders."""
+        data = self._signed_payload(
+            {
+                "order_id": order_id,
+                "pair": pair,
+                "pending_only": pending_only,
+            }
+        )
+        return self._request_json("POST", "query_order", data=data, signed=True)
+
+    def cancel_order(
+        self,
+        *,
+        order_id: int | None = None,
+        pair: str | None = None,
+        cancel_all: bool | None = None,
+    ) -> Any:
+        """Cancel one or more pending orders via the signed endpoint."""
+        data = self._signed_payload(
+            {
+                "order_id": order_id,
+                "pair": pair,
+                "cancel_all": cancel_all,
+            }
+        )
+        return self._request_json("POST", "cancel_order", data=data, signed=True)
 
     def _extract_server_time(self, payload: Any) -> int:
         data = self._unwrap_payload(payload)
@@ -187,4 +276,12 @@ class RoostooClient:
             for key in ("Data", "data", "Result", "result"):
                 if key in payload:
                     return payload[key]
+        return payload
+
+    def _signed_payload(self, extra_fields: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "timestamp": current_timestamp_ms(clock_offset_ms=self.clock_offset_ms),
+        }
+        if extra_fields:
+            payload.update(extra_fields)
         return payload

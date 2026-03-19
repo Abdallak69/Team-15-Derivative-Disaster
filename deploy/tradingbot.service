@@ -9,8 +9,12 @@ User=ssm-user
 WorkingDirectory=/opt/trading-bot
 EnvironmentFile=/opt/trading-bot/.env
 ExecStart=/opt/trading-bot/venv/bin/python -m bot.main
-Restart=always
+Restart=on-failure
 RestartSec=30
+StartLimitBurst=5
+StartLimitIntervalSec=300
+StandardOutput=append:/opt/trading-bot/logs/system.log
+StandardError=append:/opt/trading-bot/logs/system.log
 
 [Install]
 WantedBy=multi-user.target

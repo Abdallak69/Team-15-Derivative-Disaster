@@ -4,6 +4,7 @@
 **Team:** TBC (Lead), TBC, TBC, TBC
 **Date Prepared:** 18 March 2026
 **Status:** MANDATORY — all team members must read and follow every item below.
+**Positioning:** This manual defines the target operating standard for the end product. Current implementation status lives in `docs/TEAM_UPDATE.md`; current operational guidance lives in `docs/03_operations_runbook.md`.
 
 ---
 

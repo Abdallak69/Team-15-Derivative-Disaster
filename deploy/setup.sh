@@ -22,7 +22,16 @@ if [[ "${REPO_ROOT}" != "${APP_DIR}" ]]; then
   rsync -a \
     --exclude ".git/" \
     --exclude ".env" \
+    --exclude ".env.*" \
     --exclude "venv/" \
+    --exclude "logs/" \
+    --exclude "data/*.db" \
+    --exclude "data/*.db-*" \
+    --exclude "data/*.sqlite" \
+    --exclude "data/*.sqlite-*" \
+    --exclude "data/*.sqlite3" \
+    --exclude "data/*.sqlite3-*" \
+    --exclude "data/*.json" \
     --exclude "__pycache__/" \
     --exclude ".pytest_cache/" \
     "${REPO_ROOT}/" "${APP_DIR}/"
@@ -56,6 +65,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 
 mkdir -p data logs
+pytest tests -q
 python -m bot.main --status
 
 if [[ -f .env ]]; then

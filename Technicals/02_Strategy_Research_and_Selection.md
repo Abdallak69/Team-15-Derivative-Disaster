@@ -1,8 +1,9 @@
 # Strategy Research & Selection
 ## SG vs HK University Web3 Quant Trading Hackathon
 
-**Team:** TBC (Lead), TBC, TBC, TBC
+**Team:** Abdalla, Sami, Oscar, Wilson
 **Date Prepared:** 18 March 2026
+**Positioning:** This document describes the intended end-product strategy design. Current implementation status lives in `docs/TEAM_UPDATE.md`; current operational guidance lives in `docs/03_operations_runbook.md`.
 
 ---
 

@@ -5,6 +5,7 @@
 **Date Prepared:** 18 March 2026
 **Primary Deployer:** TBC
 **Authoriser:** TBC
+**Positioning:** This document describes the intended end-product deployment and go-live procedure. Current implementation status lives in `docs/TEAM_UPDATE.md`; current operational guidance lives in `docs/03_operations_runbook.md`.
 
 ---
 
@@ -145,7 +146,7 @@ Type=simple
 User=ssm-user
 WorkingDirectory=/opt/trading-bot
 EnvironmentFile=/opt/trading-bot/.env
-ExecStart=/opt/trading-bot/venv/bin/python -u bot/main.py
+ExecStart=/opt/trading-bot/venv/bin/python -m bot.main
 Restart=on-failure
 RestartSec=30
 StartLimitBurst=5
@@ -201,15 +202,15 @@ df -h /
 # PASS if: Available > 5G
 
 # Check data collection
-sqlite3 data/live_ohlcv.db "SELECT COUNT(*), MIN(timestamp), MAX(timestamp) FROM ohlcv;"
+sqlite3 data/live_ohlcv.db "SELECT COUNT(*), MIN(candle_ts), MAX(candle_ts) FROM ohlcv_1m;"
 # PASS if: count > 0, timestamps span multiple days
 
 # Check clock sync
 python -c "
-from api.roostoo_client import RoostooClient
-import os, time
-c = RoostooClient(os.getenv('ROOSTOO_API_KEY'), os.getenv('ROOSTOO_SECRET_KEY'))
-offset = c.sync_clock()
+from bot.api import AuthCredentials, RoostooClient
+c = RoostooClient(credentials=AuthCredentials.from_env(required=True))
+c.sync_server_time()
+offset = c.clock_offset_ms
 print(f'Clock offset: {offset}ms')
 assert abs(offset) < 5000, f'Clock offset too large: {offset}ms'
 print('PASS')
@@ -217,9 +218,13 @@ print('PASS')
 
 # Check Telegram
 python -c "
-from monitoring.dashboard import TelegramAlerter
 import os
-t = TelegramAlerter(os.getenv('TELEGRAM_BOT_TOKEN'), os.getenv('TELEGRAM_CHAT_ID'))
+from bot.environment import load_secret_from_env
+from bot.monitoring import TelegramAlerter
+t = TelegramAlerter(
+    bot_token=load_secret_from_env('TELEGRAM_BOT_TOKEN') or '',
+    chat_id=load_secret_from_env('TELEGRAM_CHAT_ID') or '',
+)
 t.send_message('✅ Pre-flight check: Telegram working')
 print('Check your phone. PASS if message received.')
 "
@@ -229,11 +234,8 @@ print('Check your phone. PASS if message received.')
 
 ```bash
 python -c "
-from api.roostoo_client import RoostooClient
-import os
-
-c = RoostooClient(os.getenv('ROOSTOO_API_KEY'), os.getenv('ROOSTOO_SECRET_KEY'))
-c.sync_clock()
+from bot.api import AuthCredentials, RoostooClient
+c = RoostooClient(credentials=AuthCredentials.from_env(required=True))
 
 print('1. Server time:', c.get_server_time())
 
@@ -241,7 +243,8 @@ info = c.get_exchange_info()
 print(f'2. Exchange info: {len(info)} pairs')
 
 tickers = c.get_ticker()
-print(f'3. Ticker: {len(tickers)} pairs, BTC={tickers.get(\"BTC/USD\", \"N/A\")}')
+first_ticker = tickers[0] if tickers else {}
+print(f'3. Ticker: {len(tickers)} pairs, sample={first_ticker}')
 
 balance = c.get_balance()
 print(f'4. Balance: USD free={balance.get(\"USD\", \"N/A\")}')
@@ -555,7 +558,7 @@ DATE: ___________  CHECKED BY: ___________
 |---|---|
 | Roostoo WhatsApp support | [Join via QR code from intro session] |
 | Roostoo API base URL | `https://mock-api.roostoo.com` |
-| AWS region | ap-southeast-1 (Singapore) |
+| AWS region | ap-southeast-2 (Sydney) |
 | EC2 instance type | T3.medium (2 vCPU, 4GB RAM) |
 | GitHub repo | `https://github.com/<TEAM_ORG>/roostoo-quant-bot` |
 | Telegram bot | @<BOT_NAME> |

@@ -2,9 +2,12 @@
 
 This is the single team update file for the repo. I use it to state what is actually implemented, what changed recently, what technical details matter right now, and where we are against the project plan.
 
+The files in `Technicals/` describe the intended end product.
+`docs/03_operations_runbook.md` is the current operational source of truth for code and deployment behavior.
+
 ## What is implemented right now
 
-We have completed the repo scaffold and the first working vertical slice: the market data pipeline.
+We have completed the repo scaffold and a guarded runtime slice that combines the market-data pipeline with the operational bootstrap, reconciliation, and monitoring paths the current runbook depends on.
 
 Implemented files:
 
@@ -19,8 +22,11 @@ Supporting files also exist:
 
 - `.gitignore`
 - `.env.example`
+- `config/strategy_params.yaml`
+- `config/logging_config.yaml`
 - `requirements.txt`
 - `README.md`
+- `docs/03_operations_runbook.md`
 - `deploy/setup.sh`
 - `deploy/deploy.sh`
 - `deploy/tradingbot.service`
@@ -44,6 +50,7 @@ I implemented working client support for:
 - `/v3/serverTime`
 - `/v3/exchangeInfo`
 - `/v3/ticker`
+- signed wrappers for `/v3/balance`, `/v3/pending_count`, `/v3/place_order`, `/v3/query_order`, `/v3/cancel_order`
 
 The client currently:
 
@@ -97,16 +104,20 @@ I implemented `ticker_poller.py` so the bot can:
 - filter to the tracked universe
 - persist the snapshots into sqlite
 
-### 6. Bot bootstrap and scheduler
+### 6. Bot bootstrap, reconciliation, and scheduler
 
 I implemented `bot/main.py` so the bot can:
 
 - load `.env`
+- validate YAML config
+- apply logging config
 - build the client and data modules
 - sync server time
 - load `exchangeInfo`
 - set the universe
-- run the polling loop on a schedule
+- reconcile persisted state against signed balance and pending-order endpoints
+- send startup and heartbeat Telegram alerts when Telegram secrets are configured
+- run the polling, reconciliation, heartbeat, and clock-sync loops on a schedule
 
 Current commands:
 
@@ -124,20 +135,23 @@ I only expect it to pass when `.env` contains real testing or competition keys r
 - The current candles are derived from repeated `LastPrice` polling. They are not exchange-native candles.
 - `CoinTradeValue` and `UnitTradeValue` from the ticker are 24-hour rolling snapshot values. They are not true one-minute candle volume.
 - Clock sync is not optional. The API rejects requests if local time drifts too far from server time.
-- The current implementation only covers the public data path. It does not yet cover the full private trading path.
+- The running bot now uses the signed balance and pending-order paths for operational reconciliation, but it still does not place or cancel live orders from the runtime loop.
+- The target architecture and target deployment flow are documented in `Technicals/05_Architecture_Overview.md` and `Technicals/07_Deployment_Runbook.md`.
+- The current operational contract for new code is `docs/03_operations_runbook.md`.
 - The current service and deploy flow now use `python -m bot.main --startup-check` instead of a cheap import-only check.
 - `deploy/setup.sh` now provisions swap, enables NTP, and synchronizes the current checkout into `/opt/trading-bot` before creating the venv.
 - The rebalance helper now correctly generates flattening sells for positions that disappear from the target portfolio.
+- `python -m bot.main --startup-check` now exercises the real signed reconciliation path as part of bootstrap.
 
 ## Tests and verification status
 
 Current checks passing:
 
 - `python -c "from bot.main import TradingBot"`
-- `python -m unittest discover`
+- `pytest tests -q`
 - `python -m py_compile $(rg --files -g '*.py')`
 
-There are currently 20 passing unit tests covering:
+There are currently 35 passing unit tests covering:
 
 - auth helpers
 - Roostoo client behavior
@@ -146,20 +160,19 @@ There are currently 20 passing unit tests covering:
 - universe building
 - startup/bootstrap behavior
 - state persistence
+- reconciliation and heartbeat behavior
 - rebalance flattening behavior
+- Telegram alert delivery helpers
 
 ## What is not implemented yet
 
 These planned modules are still incomplete, placeholder-level, or not production-ready:
 
-- remaining Roostoo private endpoints
 - Binance historical ingestion
 - sentiment ingestion
 - real signal generation stack
 - regime detection implementation beyond placeholder logic
 - real risk enforcement
-- Telegram monitoring
-- final logging setup
 - live execution path
 
 We should not treat the repo as competition-ready for actual trading yet.
@@ -180,14 +193,13 @@ Done:
 
 Still remaining from Phase 0:
 
-- full endpoint wrapper
+- remaining live-trading endpoint integration
 - Binance historical fetcher and stored history
 - momentum module
 - mean-reversion module
 - regime detector
 - ensemble combiner
 - risk manager
-- Telegram monitoring
 - backtest notebook
 
 ### Phase 1
@@ -200,14 +212,16 @@ We have prepared the base needed for Phase 1 by building:
 - dynamic universe loading
 - continuous ticker polling
 - local sqlite persistence
+- signed operational reconciliation
+- startup and heartbeat alert plumbing
 
 But we still need the actual test-environment endpoint verification and paper-trading style integration path.
 
 ## What I think the next step should be
 
-The next highest-value step is to keep building on the data layer before touching live trading logic. In practice that means:
+The next highest-value step is to keep building from the operational slice into the actual trading loop. In practice that means:
 
-1. finish the remaining Roostoo client endpoints
+1. wire the signed private-endpoint wrappers into real order execution flows
 2. harden the sqlite/data validation path
 3. add Binance historical ingestion for pre-competition calibration
-4. only then move into signal and regime modules
+4. move the placeholder signal, regime, and risk helpers into a real trading cycle
