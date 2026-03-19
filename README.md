@@ -1,10 +1,20 @@
 # Roostoo Quant Bot
 
-Baseline repository scaffold for the SG vs HK University Web3 Quant Trading Hackathon bot.
+Repository for the SG vs HK University Web3 Quant Trading Hackathon trading bot.
 
-## Current milestone
+The single team update document lives at `docs/TEAM_UPDATE.md`.
 
-The first repo milestone is in place:
+## Current implementation
+
+The first working vertical slice is the market data pipeline:
+
+- Roostoo request signing and clock-sync helpers
+- `/v3/exchangeInfo` universe discovery
+- `/v3/ticker` polling
+- local sqlite persistence of ticker-derived 1-minute candles
+- a single-process scheduler in `bot.main`
+
+The initial import milestone is still satisfied:
 
 ```bash
 python -c "from bot.main import TradingBot"
@@ -16,7 +26,7 @@ python -c "from bot.main import TradingBot"
 - `config/` YAML configuration templates
 - `deploy/` EC2 bootstrap and deployment scripts
 - `data/` runtime state and sqlite databases
-- `tests/` baseline unit tests for the scaffold
+- `tests/` unit tests for the scaffold and data-pipeline slice
 - `notebooks/` analysis and backtesting notebooks
 
 ## Quick start
@@ -26,11 +36,19 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-python -c "from bot.main import TradingBot; print(TradingBot().status())"
+cat docs/TEAM_UPDATE.md
+python -m bot.main --status
 python -m unittest discover
 ```
 
-## Status
+After I replace the placeholder values in `.env` with real testing keys, I run:
 
-This commit creates the documented project structure and import-safe base modules. Most domain modules are intentionally lightweight placeholders so the team can implement them incrementally without blocking the initial bootstrap milestone.
+```bash
+python -m bot.main --startup-check
+```
 
+## Notes
+
+- `python -m bot.main --startup-check` exercises the real bootstrap path once, including clock sync and universe loading, then exits.
+- `python -m bot.main` starts the long-running polling loop used by the systemd service.
+- Trading logic modules outside the data pipeline are still lightweight placeholders and should not be treated as production-ready yet.

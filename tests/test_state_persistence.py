@@ -16,13 +16,21 @@ class StatePersistenceTests(unittest.TestCase):
             bot = TradingBot(
                 config_path=Path(tmp_dir) / "strategy_params.yaml",
                 state_path=state_path,
+                db_path=Path(tmp_dir) / "live_ohlcv.db",
             )
 
             payload = {
+                "clock_offset_ms": 0,
+                "db_path": str(Path(tmp_dir) / "live_ohlcv.db"),
                 "environment": "testing",
+                "last_poll_at": None,
+                "last_snapshot_count": 0,
+                "last_stored_snapshot_count": 0,
                 "paused": True,
                 "portfolio_value": 1234.5,
                 "positions": {"BTCUSD": 0.1},
+                "universe": ["BTCUSD"],
+                "universe_size": 1,
             }
 
             bot.save_state(payload)

@@ -22,7 +22,9 @@ def generate_rebalance_orders(
 ) -> list[OrderProposal]:
     """Generate buy and sell proposals for materially different weights."""
     orders: list[OrderProposal] = []
-    for symbol, target_weight in target_weights.items():
+    all_symbols = set(current_weights) | set(target_weights)
+    for symbol in sorted(all_symbols):
+        target_weight = target_weights.get(symbol, 0.0)
         current_weight = current_weights.get(symbol, 0.0)
         drift = target_weight - current_weight
         if abs(drift) <= min_drift:
@@ -35,4 +37,3 @@ def generate_rebalance_orders(
             )
         )
     return orders
-
