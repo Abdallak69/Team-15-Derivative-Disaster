@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import logging
 from typing import Any
 
 from bot.api.roostoo_client import RoostooClient
 
 from .ohlcv_store import OhlcvStore
 from .ohlcv_store import TickerSnapshot
+
+LOGGER = logging.getLogger("tradingbot.system")
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,14 +49,29 @@ class TickerPoller:
         raw_tickers = self.client.get_ticker()
 
         snapshots: list[TickerSnapshot] = []
-        for row in raw_tickers:
+        malformed_row_count = 0
+        for index, row in enumerate(raw_tickers):
             try:
                 snapshot = TickerSnapshot.from_api_payload(row, polled_at=polled_at)
             except ValueError:
+                malformed_row_count += 1
+                if malformed_row_count <= 3:
+                    LOGGER.warning(
+                        "Skipping malformed ticker row index=%s keys=%s",
+                        index,
+                        sorted(row) if isinstance(row, dict) else type(row).__name__,
+                    )
                 continue
             if tracked_pairs and snapshot.pair not in tracked_pairs:
                 continue
             snapshots.append(snapshot)
+
+        if malformed_row_count:
+            LOGGER.warning(
+                "Dropped malformed ticker rows count=%s tracked_pair_count=%s",
+                malformed_row_count,
+                len(tracked_pairs) or len(snapshots),
+            )
 
         stored_snapshot_count = self.store.upsert_ticker_batch(snapshots)
         return PollResult(

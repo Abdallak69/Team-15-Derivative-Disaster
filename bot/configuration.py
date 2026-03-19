@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from numbers import Real
 from pathlib import Path
 import re
 from typing import Any
@@ -46,6 +47,7 @@ def load_yaml_config(path: Path) -> dict[str, Any]:
         missing_list = ", ".join(missing_sections)
         raise ConfigError(f"Missing required config sections in {path}: {missing_list}")
 
+    _validate_semantics(config, path=path)
     return config
 
 
@@ -103,3 +105,213 @@ def _validate_value(value: Any, *, context: str) -> Any:
 def _looks_sensitive(key: str) -> bool:
     normalized = key.lower()
     return any(token in normalized for token in SENSITIVE_KEYWORDS)
+
+
+def _validate_semantics(config: Mapping[str, Any], *, path: Path) -> None:
+    _require_positive_number(
+        read_config_value(config, "api", "timeout_seconds"),
+        path=path,
+        label="api.timeout_seconds",
+    )
+
+    for key in (
+        "poll_interval_seconds",
+        "trading_cycle_interval_seconds",
+        "heartbeat_interval_seconds",
+        "clock_sync_interval_seconds",
+    ):
+        _require_positive_integer(
+            read_config_value(config, "runtime", key),
+            path=path,
+            label=f"runtime.{key}",
+        )
+
+    strategy_mode = read_config_value(config, "runtime", "strategy_mode", default="disabled")
+    if strategy_mode not in {"disabled", "paper", "live"}:
+        raise ConfigError(
+            f"Invalid runtime.strategy_mode in {path}: expected one of disabled, paper, live"
+        )
+
+    ema_fast = _require_positive_integer(
+        read_config_value(config, "regime", "ema_fast_period"),
+        path=path,
+        label="regime.ema_fast_period",
+    )
+    ema_slow = _require_positive_integer(
+        read_config_value(config, "regime", "ema_slow_period"),
+        path=path,
+        label="regime.ema_slow_period",
+    )
+    if ema_slow <= ema_fast:
+        raise ConfigError(
+            f"Invalid regime EMA periods in {path}: ema_slow_period must be greater than ema_fast_period"
+        )
+    _require_positive_integer(
+        read_config_value(config, "regime", "volatility_lookback"),
+        path=path,
+        label="regime.volatility_lookback",
+    )
+    _require_positive_number(
+        read_config_value(config, "regime", "volatility_threshold_multiplier"),
+        path=path,
+        label="regime.volatility_threshold_multiplier",
+    )
+    _require_positive_integer(
+        read_config_value(config, "regime", "confirmation_periods"),
+        path=path,
+        label="regime.confirmation_periods",
+    )
+
+    lookback_days = read_config_value(config, "momentum", "lookback_days")
+    if not isinstance(lookback_days, list) or not lookback_days:
+        raise ConfigError(f"Invalid momentum.lookback_days in {path}: expected a non-empty list")
+    for index, value in enumerate(lookback_days):
+        _require_positive_integer(
+            value,
+            path=path,
+            label=f"momentum.lookback_days[{index}]",
+        )
+    _require_percentage(
+        read_config_value(config, "momentum", "rsi_threshold"),
+        path=path,
+        label="momentum.rsi_threshold",
+    )
+    macd_fast = _require_positive_integer(
+        read_config_value(config, "momentum", "macd_fast"),
+        path=path,
+        label="momentum.macd_fast",
+    )
+    macd_slow = _require_positive_integer(
+        read_config_value(config, "momentum", "macd_slow"),
+        path=path,
+        label="momentum.macd_slow",
+    )
+    if macd_slow <= macd_fast:
+        raise ConfigError(
+            f"Invalid MACD periods in {path}: momentum.macd_slow must be greater than momentum.macd_fast"
+        )
+    _require_positive_integer(
+        read_config_value(config, "momentum", "macd_signal"),
+        path=path,
+        label="momentum.macd_signal",
+    )
+    _require_positive_integer(
+        read_config_value(config, "momentum", "top_n_assets"),
+        path=path,
+        label="momentum.top_n_assets",
+    )
+
+    _require_percentage(
+        read_config_value(config, "mean_reversion", "rsi_oversold"),
+        path=path,
+        label="mean_reversion.rsi_oversold",
+    )
+    _require_positive_integer(
+        read_config_value(config, "mean_reversion", "bollinger_period"),
+        path=path,
+        label="mean_reversion.bollinger_period",
+    )
+    _require_positive_number(
+        read_config_value(config, "mean_reversion", "bollinger_std"),
+        path=path,
+        label="mean_reversion.bollinger_std",
+    )
+    _require_non_negative_number(
+        read_config_value(config, "mean_reversion", "min_volume_usd"),
+        path=path,
+        label="mean_reversion.min_volume_usd",
+    )
+    _require_positive_integer(
+        read_config_value(config, "mean_reversion", "max_hold_days"),
+        path=path,
+        label="mean_reversion.max_hold_days",
+    )
+    _require_fraction(
+        read_config_value(config, "mean_reversion", "stop_loss_pct"),
+        path=path,
+        label="mean_reversion.stop_loss_pct",
+    )
+
+    _require_fraction(
+        read_config_value(config, "risk", "max_position_pct"),
+        path=path,
+        label="risk.max_position_pct",
+    )
+    for key in ("cash_floor_bull", "cash_floor_ranging", "cash_floor_bear"):
+        _require_fraction(
+            read_config_value(config, "risk", key),
+            path=path,
+            label=f"risk.{key}",
+        )
+    _require_fraction(
+        read_config_value(config, "risk", "stop_loss_pct"),
+        path=path,
+        label="risk.stop_loss_pct",
+    )
+    circuit_breaker_l1 = _require_fraction(
+        read_config_value(config, "risk", "circuit_breaker_l1"),
+        path=path,
+        label="risk.circuit_breaker_l1",
+    )
+    circuit_breaker_l2 = _require_fraction(
+        read_config_value(config, "risk", "circuit_breaker_l2"),
+        path=path,
+        label="risk.circuit_breaker_l2",
+    )
+    if circuit_breaker_l2 <= circuit_breaker_l1:
+        raise ConfigError(
+            f"Invalid circuit breaker thresholds in {path}: circuit_breaker_l2 must exceed circuit_breaker_l1"
+        )
+    _require_fraction(
+        read_config_value(config, "risk", "daily_loss_limit"),
+        path=path,
+        label="risk.daily_loss_limit",
+    )
+
+    _require_non_negative_number(
+        read_config_value(config, "execution", "limit_offset_pct"),
+        path=path,
+        label="execution.limit_offset_pct",
+    )
+    _require_non_negative_number(
+        read_config_value(config, "execution", "min_rebalance_drift"),
+        path=path,
+        label="execution.min_rebalance_drift",
+    )
+    _require_positive_integer(
+        read_config_value(config, "execution", "order_spacing_seconds"),
+        path=path,
+        label="execution.order_spacing_seconds",
+    )
+
+
+def _require_positive_integer(value: Any, *, path: Path, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ConfigError(f"Invalid {label} in {path}: expected a positive integer")
+    return int(value)
+
+
+def _require_positive_number(value: Any, *, path: Path, label: str) -> float:
+    if not isinstance(value, Real) or isinstance(value, bool) or float(value) <= 0.0:
+        raise ConfigError(f"Invalid {label} in {path}: expected a positive number")
+    return float(value)
+
+
+def _require_non_negative_number(value: Any, *, path: Path, label: str) -> float:
+    if not isinstance(value, Real) or isinstance(value, bool) or float(value) < 0.0:
+        raise ConfigError(f"Invalid {label} in {path}: expected a non-negative number")
+    return float(value)
+
+
+def _require_fraction(value: Any, *, path: Path, label: str) -> float:
+    numeric = _require_non_negative_number(value, path=path, label=label)
+    if numeric > 1.0:
+        raise ConfigError(f"Invalid {label} in {path}: expected a value between 0 and 1")
+    return numeric
+
+
+def _require_percentage(value: Any, *, path: Path, label: str) -> float:
+    numeric = _require_non_negative_number(value, path=path, label=label)
+    if numeric > 100.0:
+        raise ConfigError(f"Invalid {label} in {path}: expected a value between 0 and 100")
+    return numeric

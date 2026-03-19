@@ -6,6 +6,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 APP_DIR="${APP_DIR:-/opt/trading-bot}"
 PYTHON_BIN="${PYTHON_BIN:-python3.11}"
 APP_USER="${APP_USER:-${USER}}"
+SERVICE_PATH="/etc/systemd/system/tradingbot.service"
 
 if [[ ! -f "${REPO_ROOT}/requirements.txt" || ! -d "${REPO_ROOT}/bot" ]]; then
   echo "This script must be run from the repository checkout." >&2
@@ -36,6 +37,15 @@ if [[ "${REPO_ROOT}" != "${APP_DIR}" ]]; then
     --exclude ".pytest_cache/" \
     "${REPO_ROOT}/" "${APP_DIR}/"
 fi
+
+sudo chown -R "${APP_USER}:${APP_USER}" "${APP_DIR}"
+
+sed \
+  -e "s|__APP_USER__|${APP_USER}|g" \
+  -e "s|__APP_DIR__|${APP_DIR}|g" \
+  "${REPO_ROOT}/deploy/tradingbot.service" | sudo tee "${SERVICE_PATH}" >/dev/null
+sudo systemctl daemon-reload
+sudo systemctl enable tradingbot.service >/dev/null
 
 if [[ ! -f /swapfile ]]; then
   sudo fallocate -l 4G /swapfile

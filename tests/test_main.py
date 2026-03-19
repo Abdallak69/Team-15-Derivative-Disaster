@@ -6,11 +6,12 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from bot.main import _resolve_backtest_symbols
 from bot.main import _build_cli_parser
 from bot.main import TradingBot
 
 
-def _write_strategy_config(path: Path) -> None:
+def _write_strategy_config(path: Path, *, strategy_mode: str = "disabled") -> None:
     path.write_text(
         "\n".join(
             [
@@ -23,6 +24,7 @@ def _write_strategy_config(path: Path) -> None:
                 "  trading_cycle_interval_seconds: 300",
                 "  heartbeat_interval_seconds: 3600",
                 "  clock_sync_interval_seconds: 3600",
+                f"  strategy_mode: {strategy_mode}",
                 "regime:",
                 "  ema_fast_period: 20",
                 "  ema_slow_period: 50",
@@ -135,6 +137,9 @@ class TradingBotTests(unittest.TestCase):
         self.assertIn("pending_order_count", status)
         self.assertIn("trading_cycle_interval_seconds", status)
         self.assertIn("heartbeat_interval_seconds", status)
+        self.assertEqual(status["strategy_mode"], "disabled")
+        self.assertEqual(status["strategy_cycle_status"], "disabled")
+        self.assertFalse(status["strategy_pipeline_ready"])
 
     def test_bootstrap_state_creates_state_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -231,6 +236,90 @@ class TradingBotTests(unittest.TestCase):
         self.assertEqual(state["last_heartbeat_at"], heartbeat["last_heartbeat_at"])
         self.assertEqual(alerter.messages[-1][0], "Heartbeat")
         self.assertIn("pending_orders=1", alerter.messages[-1][1])
+        self.assertIn("strategy_mode=disabled", alerter.messages[-1][1])
+        self.assertIn("strategy_status=disabled", alerter.messages[-1][1])
+
+    def test_run_operational_cycle_records_disabled_strategy_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "strategy_params.yaml"
+            _write_strategy_config(config_path, strategy_mode="disabled")
+            bot = TradingBot(
+                config_path=config_path,
+                state_path=Path(tmp_dir) / "bot_state.json",
+                db_path=Path(tmp_dir) / "live_ohlcv.db",
+                client=StubRoostooClient(),
+            )
+
+            result = bot.run_operational_cycle()
+            state = bot.load_state()
+
+        self.assertEqual(result["strategy_mode"], "disabled")
+        self.assertEqual(result["strategy_cycle_status"], "disabled")
+        self.assertFalse(result["strategy_pipeline_ready"])
+        self.assertEqual(state["strategy_mode"], "disabled")
+        self.assertEqual(state["strategy_cycle_status"], "disabled")
+        self.assertEqual(
+            state["last_strategy_cycle"]["notes"],
+            ["Strategy cycle disabled by runtime.strategy_mode."],
+        )
+
+    def test_run_operational_cycle_records_paper_skeleton_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "strategy_params.yaml"
+            _write_strategy_config(config_path, strategy_mode="paper")
+            bot = TradingBot(
+                config_path=config_path,
+                state_path=Path(tmp_dir) / "bot_state.json",
+                db_path=Path(tmp_dir) / "live_ohlcv.db",
+                client=StubRoostooClient(),
+            )
+
+            result = bot.run_operational_cycle()
+            state = bot.load_state()
+
+        self.assertEqual(result["strategy_mode"], "paper")
+        self.assertEqual(result["strategy_cycle_status"], "skeleton_only")
+        self.assertFalse(result["strategy_pipeline_ready"])
+        self.assertEqual(state["strategy_mode"], "paper")
+        self.assertEqual(state["strategy_cycle_status"], "skeleton_only")
+        self.assertIn("signal_generation", " ".join(state["last_strategy_cycle"]["notes"]))
+
+    def test_start_blocks_live_strategy_mode_until_runtime_is_implemented(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "strategy_params.yaml"
+            _write_strategy_config(config_path, strategy_mode="live")
+            bot = TradingBot(
+                config_path=config_path,
+                state_path=Path(tmp_dir) / "bot_state.json",
+                db_path=Path(tmp_dir) / "live_ohlcv.db",
+                client=StubRoostooClient(),
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "intentionally blocked"):
+                bot.start()
+
+    def test_extract_positions_requires_explicit_position_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "strategy_params.yaml"
+            _write_strategy_config(config_path)
+            bot = TradingBot(
+                config_path=config_path,
+                state_path=Path(tmp_dir) / "bot_state.json",
+                db_path=Path(tmp_dir) / "live_ohlcv.db",
+                client=StubRoostooClient(),
+            )
+
+            positions = bot._extract_positions(
+                {
+                    "Data": {
+                        "portfolioValue": "1000000.0",
+                        "available": "0.1",
+                        "equity": "1000000.0",
+                    }
+                }
+            )
+
+        self.assertEqual(positions, {})
 
 
 class MainCliTests(unittest.TestCase):
@@ -240,3 +329,41 @@ class MainCliTests(unittest.TestCase):
 
         self.assertTrue(args.status)
         self.assertFalse(args.startup_check)
+
+    def test_backtest_flags_parse_expected_values(self) -> None:
+        parser = _build_cli_parser()
+        args = parser.parse_args(
+            [
+                "--backtest-core-modules",
+                "--symbols",
+                "BTCUSD,ETHUSD",
+                "--history-days",
+                "30",
+                "--train-days",
+                "15",
+                "--validation-days",
+                "15",
+            ]
+        )
+
+        self.assertTrue(args.backtest_core_modules)
+        self.assertEqual(args.symbols, "BTCUSD,ETHUSD")
+        self.assertEqual(args.history_days, 30)
+        self.assertEqual(args.train_days, 15)
+        self.assertEqual(args.validation_days, 15)
+
+    def test_resolve_backtest_symbols_prefers_state_universe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "strategy_params.yaml"
+            _write_strategy_config(config_path)
+            bot = TradingBot(
+                config_path=config_path,
+                state_path=Path(tmp_dir) / "bot_state.json",
+                db_path=Path(tmp_dir) / "live_ohlcv.db",
+                client=StubRoostooClient(),
+            )
+            bot.save_state({"universe": ["BTCUSD", "ETHUSD"]})
+
+            symbols = _resolve_backtest_symbols(bot, None)
+
+        self.assertEqual(symbols, ("BTCUSD", "ETHUSD"))

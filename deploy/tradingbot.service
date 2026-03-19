@@ -5,16 +5,16 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=ssm-user
-WorkingDirectory=/opt/trading-bot
-EnvironmentFile=/opt/trading-bot/.env
-ExecStart=/opt/trading-bot/venv/bin/python -m bot.main
+User=__APP_USER__
+WorkingDirectory=__APP_DIR__
+EnvironmentFile=__APP_DIR__/.env
+ExecStart=__APP_DIR__/venv/bin/python -m bot.main
 Restart=on-failure
 RestartSec=30
 StartLimitBurst=5
 StartLimitIntervalSec=300
-StandardOutput=append:/opt/trading-bot/logs/system.log
-StandardError=append:/opt/trading-bot/logs/system.log
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

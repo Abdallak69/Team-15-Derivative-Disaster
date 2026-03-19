@@ -24,6 +24,8 @@ What works today:
 - YAML-backed runtime configuration and logging bootstrap
 - Roostoo `serverTime`, `exchangeInfo`, `ticker`, and signed endpoint wrappers
 - local sqlite persistence of ticker-derived 1-minute candles
+- Binance public kline ingestion with sqlite caching for repeated backtests
+- staged CLI backtests for momentum, mean-reversion, and regime detection
 - a single-process polling, reconciliation, and heartbeat scheduler in `bot.main`
 - startup reconciliation against signed balance and pending-order endpoints
 - Telegram startup and heartbeat delivery when `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are configured
@@ -33,7 +35,7 @@ What is still on the path to the end product:
 
 - full strategy orchestration in the runtime loop
 - live order placement and cancel/query flows wired into execution modules
-- historical Binance ingestion and sentiment refresh jobs
+- sentiment refresh jobs
 
 ## Required Verification
 
@@ -52,6 +54,16 @@ python -m bot.main --startup-check
 ```
 
 `--startup-check` now exercises the production bootstrap path, including clock sync, universe load, and signed-state reconciliation. If Telegram secrets are configured, it also sends the startup alert.
+
+Keep `runtime.strategy_mode` at `disabled` or `paper` while the project is still in skeleton phase. `live` is intentionally blocked in code until signal generation, weighting, risk gating, rebalance planning, and execution are wired end to end.
+
+For pre-competition calibration and the first-three-module validation pass:
+
+```bash
+python -m bot.main --backtest-core-modules --symbols BTCUSD,ETHUSD,SOLUSD --history-days 180 --train-days 90 --validation-days 90
+```
+
+If local polling/bootstrap has already written `data/bot_state.json`, `--symbols` is optional and the backtest will reuse the discovered universe.
 
 ## Deployment Assumptions
 

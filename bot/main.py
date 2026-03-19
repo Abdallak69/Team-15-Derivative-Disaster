@@ -19,8 +19,11 @@ from typing import Any
 from bot.api import AuthCredentials
 from bot.api import RoostooClient
 from bot.api.roostoo_client import DEFAULT_BASE_URL
+from bot.backtest import CoreModuleBacktester
 from bot.configuration import read_config_value
 from bot.configuration import load_yaml_config
+from bot.data import BinanceFetcher
+from bot.data import BinanceHistoryStore
 from bot.data import OhlcvStore
 from bot.data import TickerPoller
 from bot.data import UniverseBuilder
@@ -33,6 +36,8 @@ from bot.monitoring import compute_drawdown
 from bot.monitoring import compute_return
 from bot.risk import CircuitBreaker
 from bot.risk import RiskManager
+from bot.strategy import strategy_pipeline_ready
+from bot.strategy import summarize_strategy_pipeline_gaps
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -60,6 +65,87 @@ def _coerce_float(value: Any) -> float | None:
         return None
 
 
+def _parse_symbol_list(raw_symbols: str | None) -> tuple[str, ...]:
+    if not raw_symbols:
+        return ()
+    return tuple(
+        symbol.strip()
+        for symbol in raw_symbols.split(",")
+        if symbol.strip()
+    )
+
+
+def _resolve_backtest_symbols(bot: TradingBot, explicit_symbols: str | None) -> tuple[str, ...]:
+    requested_symbols = _parse_symbol_list(explicit_symbols)
+    if requested_symbols:
+        return requested_symbols
+
+    state_universe = bot.load_state().get("universe", [])
+    if isinstance(state_universe, list) and state_universe:
+        return tuple(str(symbol) for symbol in state_universe if symbol)
+
+    if bot.client is not None:
+        exchange_info = bot.client.get_exchange_info()
+        universe = bot.universe_builder.build_from_exchange_info(exchange_info)
+        if universe:
+            return tuple(universe)
+
+    raise RuntimeError(
+        "Unable to resolve a symbol universe. Run local polling/bootstrap first or pass --symbols."
+    )
+
+
+def _run_core_module_backtest(bot: TradingBot, args: argparse.Namespace) -> dict[str, Any]:
+    symbols = _resolve_backtest_symbols(bot, args.symbols)
+    history_store = BinanceHistoryStore(
+        Path(args.historical_db_path)
+        if args.historical_db_path
+        else _project_path("data", "binance_historical.db")
+    )
+    backtester = CoreModuleBacktester(
+        config=bot.config,
+        history_store=history_store,
+        fetcher=BinanceFetcher(),
+    )
+    report = backtester.run(
+        symbols=symbols,
+        history_days=args.history_days,
+        train_days=args.train_days,
+        validation_days=args.validation_days,
+        benchmark_symbol=args.benchmark_symbol,
+    )
+    SYSTEM_LOGGER.info(
+        "Core-module backtest completed symbols=%s history_days=%s db_path=%s",
+        len(symbols),
+        args.history_days,
+        history_store.db_path,
+    )
+    return report
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyCycleResult:
+    """Serializable summary of one strategy-cycle decision point."""
+
+    mode: str
+    status: str
+    triggered_at: str
+    notes: tuple[str, ...] = ()
+    target_weights: dict[str, float] = field(default_factory=dict)
+    proposed_orders: tuple[dict[str, Any], ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable representation of the strategy-cycle status."""
+        return {
+            "mode": self.mode,
+            "notes": list(self.notes),
+            "proposed_orders": [dict(order) for order in self.proposed_orders],
+            "status": self.status,
+            "target_weights": dict(self.target_weights),
+            "triggered_at": self.triggered_at,
+        }
+
+
 @dataclass(slots=True)
 class TradingBot:
     """Single-process orchestrator for the current trading-bot runtime."""
@@ -77,6 +163,7 @@ class TradingBot:
     trading_cycle_interval_seconds: int = 300
     heartbeat_interval_seconds: int = 3600
     clock_sync_interval_seconds: int = 3600
+    strategy_mode: str = "disabled"
     daily_loss_limit: float = 0.02
     min_rebalance_drift: float = 0.15
     order_spacing_seconds: int = 65
@@ -131,6 +218,14 @@ class TradingBot:
                 "runtime",
                 "clock_sync_interval_seconds",
                 default=self.clock_sync_interval_seconds,
+            )
+        )
+        self.strategy_mode = str(
+            read_config_value(
+                self.config,
+                "runtime",
+                "strategy_mode",
+                default=self.strategy_mode,
             )
         )
         max_position_pct = float(
@@ -234,6 +329,8 @@ class TradingBot:
             "last_heartbeat_at": None,
             "last_poll_at": None,
             "last_reconciled_at": None,
+            "last_strategy_cycle": {},
+            "last_strategy_cycle_at": None,
             "last_snapshot_count": 0,
             "last_stored_snapshot_count": 0,
             "pending_order_count": 0,
@@ -244,6 +341,8 @@ class TradingBot:
             "positions": {},
             "regime": "unknown",
             "start_portfolio_value": None,
+            "strategy_cycle_status": "disabled" if self.strategy_mode == "disabled" else "pending",
+            "strategy_mode": self.strategy_mode,
             "universe": list(self.universe),
             "universe_size": len(self.universe),
         }
@@ -265,7 +364,27 @@ class TradingBot:
         """Load persisted state, or the default structure when none exists."""
         if not self.state_path.exists():
             return self.default_state()
-        return json.loads(self.state_path.read_text(encoding="utf-8"))
+        try:
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            quarantined_path = self._quarantine_corrupt_state_file()
+            SYSTEM_LOGGER.exception(
+                "State file could not be read; restored defaults state_path=%s quarantined_path=%s",
+                self.state_path,
+                quarantined_path,
+            )
+            return self.default_state()
+
+        if not isinstance(payload, dict):
+            quarantined_path = self._quarantine_corrupt_state_file()
+            SYSTEM_LOGGER.error(
+                "State file root was not a JSON object; restored defaults state_path=%s quarantined_path=%s",
+                self.state_path,
+                quarantined_path,
+            )
+            return self.default_state()
+
+        return payload
 
     def save_state(self, state: dict[str, Any] | None = None) -> Path:
         """Persist state via an atomic replace to avoid partial writes."""
@@ -376,24 +495,40 @@ class TradingBot:
         if not self.is_bootstrapped:
             self.bootstrap()
 
-        state = self._reconcile_state()
+        state = self._reconcile_state(save=False)
+        strategy_cycle = self._run_strategy_cycle()
+        state.update(
+            {
+                "last_strategy_cycle": strategy_cycle.to_dict(),
+                "last_strategy_cycle_at": strategy_cycle.triggered_at,
+                "strategy_cycle_status": strategy_cycle.status,
+                "strategy_mode": strategy_cycle.mode,
+            }
+        )
+        self.save_state(state)
         SYSTEM_LOGGER.info(
-            "Operational cycle completed portfolio_value=%s pending_order_count=%s paused=%s",
+            "Operational cycle completed portfolio_value=%s pending_order_count=%s paused=%s strategy_cycle_status=%s",
             state["portfolio_value"],
             state["pending_order_count"],
             state["paused"],
+            strategy_cycle.status,
         )
         return {
             "circuit_breaker_status": state["circuit_breaker_status"],
             "drawdown_pct": state["drawdown_pct"],
             "last_reconciled_at": state["last_reconciled_at"],
+            "last_strategy_cycle_at": state["last_strategy_cycle_at"],
             "paused": state["paused"],
             "pending_order_count": state["pending_order_count"],
             "portfolio_value": state["portfolio_value"],
+            "strategy_cycle_status": state["strategy_cycle_status"],
+            "strategy_mode": state["strategy_mode"],
+            "strategy_pipeline_ready": strategy_pipeline_ready(),
         }
 
     def start(self) -> dict[str, Any]:
         """Prepare the pipeline and mark the bot as running."""
+        self._assert_runtime_mode_supported()
         self.is_running = True
         SYSTEM_LOGGER.info("Starting trading bot")
         try:
@@ -487,11 +622,15 @@ class TradingBot:
             "last_heartbeat_at": state["last_heartbeat_at"],
             "last_poll_at": state["last_poll_at"],
             "last_reconciled_at": state["last_reconciled_at"],
+            "last_strategy_cycle_at": state["last_strategy_cycle_at"],
             "paused": state["paused"],
             "pending_order_count": state["pending_order_count"],
             "poll_interval_seconds": self.poll_interval_seconds,
             "portfolio_value": state["portfolio_value"],
             "state_path": str(self.state_path),
+            "strategy_cycle_status": state["strategy_cycle_status"],
+            "strategy_mode": self.strategy_mode,
+            "strategy_pipeline_ready": strategy_pipeline_ready(),
             "telegram_configured": self.alerter is not None,
             "trading_cycle_interval_seconds": self.trading_cycle_interval_seconds,
             "universe_size": len(self.universe) or state["universe_size"],
@@ -546,6 +685,8 @@ class TradingBot:
             f"portfolio_value={state['portfolio_value']} "
             f"drawdown_pct={state['drawdown_pct']} "
             f"pending_orders={state['pending_order_count']} "
+            f"strategy_mode={state['strategy_mode']} "
+            f"strategy_status={state['strategy_cycle_status']} "
             f"last_poll_at={state['last_poll_at']}"
         )
         delivered = self._send_telegram_message("Heartbeat", message)
@@ -693,11 +834,47 @@ class TradingBot:
             SYSTEM_LOGGER.info("Telegram alert delivered title=%s", title)
             return True
 
+    def _assert_runtime_mode_supported(self) -> None:
+        if self.strategy_mode == "live":
+            raise RuntimeError(
+                "runtime.strategy_mode=live is intentionally blocked while the trading runtime is still a skeleton."
+            )
+
+    def _run_strategy_cycle(self) -> StrategyCycleResult:
+        triggered_at = datetime.now(timezone.utc).isoformat()
+        if self.strategy_mode == "disabled":
+            return StrategyCycleResult(
+                mode=self.strategy_mode,
+                status="disabled",
+                triggered_at=triggered_at,
+                notes=("Strategy cycle disabled by runtime.strategy_mode.",),
+            )
+        if self.strategy_mode == "paper":
+            return StrategyCycleResult(
+                mode=self.strategy_mode,
+                status="skeleton_only",
+                triggered_at=triggered_at,
+                notes=summarize_strategy_pipeline_gaps(),
+            )
+        raise RuntimeError(
+            f"Unsupported runtime.strategy_mode={self.strategy_mode!r}; expected disabled, paper, or live."
+        )
+
     def _state_with_defaults(self, state: dict[str, Any] | None = None) -> dict[str, Any]:
         merged = self.default_state()
         if state:
             merged.update(state)
         return merged
+
+    def _quarantine_corrupt_state_file(self) -> Path | None:
+        if not self.state_path.exists():
+            return None
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        quarantined_path = self.state_path.with_name(
+            f"{self.state_path.stem}.corrupt-{timestamp}{self.state_path.suffix}"
+        )
+        self.state_path.replace(quarantined_path)
+        return quarantined_path
 
     def _unwrap_response_payload(self, payload: Any) -> Any:
         current = payload
@@ -779,14 +956,26 @@ class TradingBot:
         )
 
         if not records and isinstance(data, Mapping):
-            scalar_mapping = {}
-            for key, value in data.items():
-                amount = _coerce_float(value)
-                if amount is None or amount == 0.0:
+            for key in (
+                "balances_by_asset",
+                "balancesByAsset",
+                "positions_by_symbol",
+                "positionsBySymbol",
+                "holdings_by_asset",
+                "holdingsByAsset",
+            ):
+                candidate_mapping = data.get(key)
+                if not isinstance(candidate_mapping, Mapping):
                     continue
-                scalar_mapping[str(key)] = amount
-            if scalar_mapping:
-                return scalar_mapping
+
+                scalar_mapping = {}
+                for raw_symbol, raw_amount in candidate_mapping.items():
+                    amount = _coerce_float(raw_amount)
+                    if amount is None or amount == 0.0:
+                        continue
+                    scalar_mapping[str(raw_symbol)] = amount
+                if scalar_mapping:
+                    return scalar_mapping
 
         for record in records:
             symbol = _first_present(
@@ -875,6 +1064,42 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the current bot status without network calls.",
     )
+    parser.add_argument(
+        "--backtest-core-modules",
+        action="store_true",
+        help="Fetch Binance history and backtest momentum, mean reversion, and regime detection.",
+    )
+    parser.add_argument(
+        "--symbols",
+        help="Comma-separated symbol list for the Binance backtest. Defaults to the polled or live universe.",
+    )
+    parser.add_argument(
+        "--history-days",
+        type=int,
+        default=180,
+        help="Total backtest evaluation window in days. Default: 180.",
+    )
+    parser.add_argument(
+        "--train-days",
+        type=int,
+        default=90,
+        help="Training split length in days. Default: 90.",
+    )
+    parser.add_argument(
+        "--validation-days",
+        type=int,
+        default=90,
+        help="Validation split length in days. Default: 90.",
+    )
+    parser.add_argument(
+        "--benchmark-symbol",
+        default="BTCUSD",
+        help="Benchmark symbol used for regime detection. Default: BTCUSD.",
+    )
+    parser.add_argument(
+        "--historical-db-path",
+        help="Optional sqlite cache path for Binance historical klines.",
+    )
     return parser
 
 
@@ -886,5 +1111,7 @@ if __name__ == "__main__":
         print(bot.status())
     elif args.startup_check:
         print(bot.startup_check())
+    elif args.backtest_core_modules:
+        print(json.dumps(_run_core_module_backtest(bot, args), indent=2, sort_keys=True))
     else:
         bot.run_forever()

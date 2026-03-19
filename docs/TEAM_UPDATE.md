@@ -151,9 +151,10 @@ Current checks passing:
 - `pytest tests -q`
 - `python -m py_compile $(rg --files -g '*.py')`
 
-There are currently 35 passing unit tests covering:
+There are currently 44 passing unit tests covering:
 
 - auth helpers
+- Binance historical pagination and caching paths
 - Roostoo client behavior
 - sqlite candle persistence
 - ticker polling
@@ -162,16 +163,16 @@ There are currently 35 passing unit tests covering:
 - state persistence
 - reconciliation and heartbeat behavior
 - rebalance flattening behavior
+- staged core-module backtests
+- regime classification confirmation behavior
+- richer momentum and mean-reversion signal logic
 - Telegram alert delivery helpers
 
 ## What is not implemented yet
 
 These planned modules are still incomplete, placeholder-level, or not production-ready:
 
-- Binance historical ingestion
 - sentiment ingestion
-- real signal generation stack
-- regime detection implementation beyond placeholder logic
 - real risk enforcement
 - live execution path
 
@@ -194,10 +195,6 @@ Done:
 Still remaining from Phase 0:
 
 - remaining live-trading endpoint integration
-- Binance historical fetcher and stored history
-- momentum module
-- mean-reversion module
-- regime detector
 - ensemble combiner
 - risk manager
 - backtest notebook
@@ -223,5 +220,5 @@ The next highest-value step is to keep building from the operational slice into 
 
 1. wire the signed private-endpoint wrappers into real order execution flows
 2. harden the sqlite/data validation path
-3. add Binance historical ingestion for pre-competition calibration
-4. move the placeholder signal, regime, and risk helpers into a real trading cycle
+3. add the remaining ensemble and risk layers on top of the now-runnable historical backtest slice
+4. move the calibrated signal, regime, and risk helpers into a real trading cycle

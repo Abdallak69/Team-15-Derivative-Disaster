@@ -8,6 +8,7 @@ runtime:
   trading_cycle_interval_seconds: 300
   heartbeat_interval_seconds: 3600
   clock_sync_interval_seconds: 3600
+  strategy_mode: disabled
 
 regime:
   ema_fast_period: 20

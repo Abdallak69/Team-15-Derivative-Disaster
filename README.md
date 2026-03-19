@@ -15,6 +15,8 @@ The current working slice is the market data and operations runtime:
 - `/v3/ticker` polling
 - signed balance and pending-order reconciliation
 - local sqlite persistence of ticker-derived 1-minute candles
+- Binance historical kline fetching with local sqlite caching
+- staged backtests for momentum, mean reversion, and regime detection
 - a single-process scheduler in `bot.main` for polling, reconciliation, heartbeats, and clock sync
 
 The initial import milestone is still satisfied:
@@ -43,6 +45,7 @@ cat docs/03_operations_runbook.md
 cat docs/TEAM_UPDATE.md
 python -m bot.main --status
 pytest tests -q
+python -m bot.main --backtest-core-modules --symbols BTCUSD,ETHUSD,SOLUSD --history-days 30 --train-days 15 --validation-days 15
 ```
 
 After I replace the placeholder values in `.env` with real testing keys, I run:
@@ -56,5 +59,7 @@ python -m bot.main --startup-check
 - `Technicals/` documents the intended end-state bot, not just the currently implemented slice.
 - `docs/03_operations_runbook.md` is the operational contract new code and deploy procedures should follow.
 - `python -m bot.main --startup-check` exercises the real bootstrap path once, including clock sync, universe loading, and signed-state reconciliation, then exits.
+- `python -m bot.main --backtest-core-modules` fetches/caches Binance klines and evaluates only the first three modules from the strategy document. If local polling has already produced `data/bot_state.json`, omit `--symbols` to reuse that universe.
 - `python -m bot.main` starts the long-running polling loop used by the systemd service.
+- `runtime.strategy_mode` defaults to `disabled`. `paper` records explicit skeleton-only strategy cycles, and `live` is intentionally blocked until the full signal-to-risk-to-execution path exists.
 - Trading decision and execution modules are still lightweight placeholders and should not be treated as production-ready yet.
