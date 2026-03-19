@@ -117,6 +117,58 @@ class StubRoostooClient:
         }
 
 
+class StopLossClient(StubRoostooClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self._balance_calls = 0
+
+    def get_balance(self) -> dict[str, object]:
+        self._balance_calls += 1
+        last_price = "100.0" if self._balance_calls == 1 else "96.0"
+        return {
+            "Data": {
+                "portfolioValue": "1000000.0",
+                "balances": [
+                    {
+                        "asset": "BTCUSD",
+                        "quantity": "1.0",
+                        "usdValue": last_price,
+                        "entryPrice": "100.0",
+                        "lastPrice": last_price,
+                    }
+                ],
+            }
+        }
+
+    def query_order(self, *, pending_only: bool | None = None) -> dict[str, object]:
+        return {"Data": {"orders": []}}
+
+
+class DrawdownSequenceClient(StubRoostooClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self._balance_calls = 0
+
+    def get_balance(self) -> dict[str, object]:
+        self._balance_calls += 1
+        portfolio_value = "1000000.0" if self._balance_calls == 1 else "940000.0"
+        return {
+            "Data": {
+                "portfolioValue": portfolio_value,
+                "balances": [
+                    {
+                        "asset": "BTCUSD",
+                        "quantity": "0.1",
+                        "usdValue": "6000.0",
+                    }
+                ],
+            }
+        }
+
+    def query_order(self, *, pending_only: bool | None = None) -> dict[str, object]:
+        return {"Data": {"orders": []}}
+
+
 class StubAlerter:
     def __init__(self) -> None:
         self.messages: list[tuple[str, str]] = []
@@ -293,6 +345,7 @@ class TradingBotTests(unittest.TestCase):
         self.assertIsNotNone(heartbeat["last_heartbeat_at"])
         self.assertEqual(state["last_heartbeat_at"], heartbeat["last_heartbeat_at"])
         self.assertEqual(alerter.messages[-1][0], "Heartbeat")
+        self.assertIn("risk_priority=NONE", alerter.messages[-1][1])
         self.assertIn("pending_orders=1", alerter.messages[-1][1])
         self.assertIn("strategy_mode=disabled", alerter.messages[-1][1])
         self.assertIn("strategy_status=disabled", alerter.messages[-1][1])
@@ -340,7 +393,8 @@ class TradingBotTests(unittest.TestCase):
         self.assertFalse(result["strategy_pipeline_ready"])
         self.assertEqual(state["strategy_mode"], "paper")
         self.assertEqual(state["strategy_cycle_status"], "skeleton_only")
-        self.assertIn("risk_gating", " ".join(state["last_strategy_cycle"]["notes"]))
+        self.assertNotIn("risk_gating", " ".join(state["last_strategy_cycle"]["notes"]))
+        self.assertIn("rebalance_planning", " ".join(state["last_strategy_cycle"]["notes"]))
 
     def test_start_blocks_live_strategy_mode_until_runtime_is_implemented(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -378,6 +432,48 @@ class TradingBotTests(unittest.TestCase):
             )
 
         self.assertEqual(positions, {})
+
+    def test_run_operational_cycle_surfaces_structured_stop_loss_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "strategy_params.yaml"
+            _write_strategy_config(config_path)
+            bot = TradingBot(
+                config_path=config_path,
+                state_path=Path(tmp_dir) / "bot_state.json",
+                db_path=Path(tmp_dir) / "live_ohlcv.db",
+                client=StopLossClient(),
+            )
+
+            result = bot.run_operational_cycle()
+            state = bot.load_state()
+
+        self.assertEqual(result["risk_decision"]["priority"], "FORCED_SELLS")
+        self.assertEqual(result["risk_decision"]["reason"], "stop_loss")
+        self.assertEqual(result["risk_decision"]["forced_sells"][0]["pair"], "BTCUSD")
+        self.assertFalse(result["block_new_buys"])
+        self.assertEqual(state["risk_decision"]["forced_sells"][0]["action"], "SELL_FULL")
+
+    def test_run_operational_cycle_latches_level_two_and_pauses_new_buys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "strategy_params.yaml"
+            _write_strategy_config(config_path)
+            bot = TradingBot(
+                config_path=config_path,
+                state_path=Path(tmp_dir) / "bot_state.json",
+                db_path=Path(tmp_dir) / "live_ohlcv.db",
+                client=DrawdownSequenceClient(),
+            )
+
+            result = bot.run_operational_cycle()
+            state = bot.load_state()
+
+        self.assertEqual(result["risk_decision"]["portfolio_action"], "LIQUIDATE_ALL")
+        self.assertEqual(result["risk_decision"]["priority"], "LIQUIDATE_ALL")
+        self.assertTrue(result["block_new_buys"])
+        self.assertTrue(result["paused"])
+        self.assertEqual(state["circuit_breaker_status"], "paused")
+        self.assertIsNotNone(state["paused_until"])
+        self.assertAlmostEqual(state["drawdown_pct"], 0.06)
 
 
 class MainCliTests(unittest.TestCase):

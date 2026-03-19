@@ -39,8 +39,8 @@ def current_strategy_pipeline() -> tuple[StrategyPipelineStage, ...]:
         ),
         StrategyPipelineStage(
             name="risk_gating",
-            implemented=False,
-            summary="Live risk reduction and order-level gating are not enforced yet.",
+            implemented=True,
+            summary="Portfolio drawdown gates, buy blocking, and forced-exit decisions are reconciled into runtime state.",
         ),
         StrategyPipelineStage(
             name="rebalance_planning",

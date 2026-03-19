@@ -32,9 +32,9 @@ from bot.environment import load_secret_from_env
 from bot.environment import load_project_env
 from bot.logging_utils import configure_logging
 from bot.monitoring import TelegramAlerter
-from bot.monitoring import compute_drawdown
 from bot.monitoring import compute_return
 from bot.risk import CircuitBreaker
+from bot.risk import RiskDecision
 from bot.risk import RiskManager
 from bot.strategy import strategy_pipeline_ready
 from bot.strategy import summarize_strategy_pipeline_gaps
@@ -243,6 +243,9 @@ class TradingBot:
         circuit_breaker_level_two = float(
             read_config_value(self.config, "risk", "circuit_breaker_l2", default=0.05)
         )
+        stop_loss_pct = float(
+            read_config_value(self.config, "risk", "stop_loss_pct", default=0.03)
+        )
         self.daily_loss_limit = float(
             read_config_value(
                 self.config,
@@ -288,7 +291,11 @@ class TradingBot:
         if self.alerter is None:
             self.alerter = self._build_telegram_alerter()
         if self.risk_manager is None:
-            self.risk_manager = RiskManager(max_position_pct=max_position_pct)
+            self.risk_manager = RiskManager(
+                max_position_pct=max_position_pct,
+                stop_loss_pct=stop_loss_pct,
+                daily_loss_limit=self.daily_loss_limit,
+            )
         if self.circuit_breaker is None:
             self.circuit_breaker = CircuitBreaker(
                 level_one=circuit_breaker_level_one,
@@ -339,13 +346,17 @@ class TradingBot:
             "last_strategy_cycle_at": None,
             "last_snapshot_count": 0,
             "last_stored_snapshot_count": 0,
+            "max_drawdown": 0.0,
             "pending_order_count": 0,
             "pending_orders": [],
             "paused": False,
+            "paused_until": None,
             "peak_portfolio_value": None,
             "portfolio_value": None,
             "positions": {},
             "regime": "unknown",
+            "risk_decision": self._default_risk_decision(),
+            "risk_state": {},
             "start_portfolio_value": None,
             "strategy_cycle_status": "disabled" if self.strategy_mode == "disabled" else "pending",
             "strategy_mode": self.strategy_mode,
@@ -520,13 +531,17 @@ class TradingBot:
             strategy_cycle.status,
         )
         return {
+            "block_new_buys": state["risk_decision"]["block_new_buys"],
             "circuit_breaker_status": state["circuit_breaker_status"],
             "drawdown_pct": state["drawdown_pct"],
             "last_reconciled_at": state["last_reconciled_at"],
             "last_strategy_cycle_at": state["last_strategy_cycle_at"],
+            "max_drawdown": state["max_drawdown"],
             "paused": state["paused"],
+            "paused_until": state["paused_until"],
             "pending_order_count": state["pending_order_count"],
             "portfolio_value": state["portfolio_value"],
+            "risk_decision": dict(state["risk_decision"]),
             "strategy_cycle_status": state["strategy_cycle_status"],
             "strategy_mode": state["strategy_mode"],
             "strategy_pipeline_ready": strategy_pipeline_ready(),
@@ -634,6 +649,7 @@ class TradingBot:
         """Expose the current runtime state without making network calls."""
         state = self._state_with_defaults(self.load_state())
         return {
+            "block_new_buys": state["risk_decision"]["block_new_buys"],
             "config_path": str(self.config_path),
             "logging_config_path": str(self.logging_config_path),
             "clock_offset_ms": self.client.clock_offset_ms if self.client else 0,
@@ -647,10 +663,13 @@ class TradingBot:
             "last_poll_at": state["last_poll_at"],
             "last_reconciled_at": state["last_reconciled_at"],
             "last_strategy_cycle_at": state["last_strategy_cycle_at"],
+            "max_drawdown": state["max_drawdown"],
             "paused": state["paused"],
+            "paused_until": state["paused_until"],
             "pending_order_count": state["pending_order_count"],
             "poll_interval_seconds": self.poll_interval_seconds,
             "portfolio_value": state["portfolio_value"],
+            "risk_decision": dict(state["risk_decision"]),
             "state_path": str(self.state_path),
             "strategy_cycle_status": state["strategy_cycle_status"],
             "strategy_mode": self.strategy_mode,
@@ -708,6 +727,7 @@ class TradingBot:
             f"env={self.environment} universe={len(self.universe)} "
             f"portfolio_value={state['portfolio_value']} "
             f"drawdown_pct={state['drawdown_pct']} "
+            f"risk_priority={state['risk_decision']['priority']} "
             f"pending_orders={state['pending_order_count']} "
             f"strategy_mode={state['strategy_mode']} "
             f"strategy_status={state['strategy_cycle_status']} "
@@ -762,21 +782,11 @@ class TradingBot:
         reconciled_at = datetime.now(timezone.utc).isoformat()
 
         if portfolio_value is not None:
-            peak_portfolio_value = current_state["peak_portfolio_value"] or portfolio_value
-            peak_portfolio_value = max(float(peak_portfolio_value), portfolio_value)
             start_portfolio_value = current_state["start_portfolio_value"] or portfolio_value
-            drawdown_pct = compute_drawdown(peak_portfolio_value, portfolio_value)
             cumulative_return = compute_return(start_portfolio_value, portfolio_value)
         else:
-            peak_portfolio_value = current_state["peak_portfolio_value"]
             start_portfolio_value = current_state["start_portfolio_value"]
-            drawdown_pct = current_state["drawdown_pct"]
             cumulative_return = current_state["cumulative_return"]
-
-        circuit_breaker_status = (
-            self.circuit_breaker.evaluate(drawdown_pct) if self.circuit_breaker else "ok"
-        )
-        paused = circuit_breaker_status == "halt"
 
         current_state.update(
             {
@@ -785,12 +795,7 @@ class TradingBot:
                     if isinstance(balance_payload, Mapping)
                     else current_state["balance_snapshot"]
                 ),
-                "circuit_breaker_status": circuit_breaker_status,
                 "cumulative_return": cumulative_return,
-                "drawdown_pct": drawdown_pct,
-                "last_reconciled_at": reconciled_at,
-                "paused": paused,
-                "peak_portfolio_value": peak_portfolio_value,
                 "pending_order_count": pending_order_count,
                 "pending_orders": pending_orders,
                 "portfolio_value": portfolio_value,
@@ -799,19 +804,311 @@ class TradingBot:
             }
         )
 
+        peak_portfolio_value = current_state["peak_portfolio_value"]
+        drawdown_pct = current_state["drawdown_pct"]
+        max_drawdown = current_state["max_drawdown"]
+        circuit_breaker_status = current_state["circuit_breaker_status"]
+        paused = current_state["paused"]
+        paused_until = current_state["paused_until"]
+        risk_state = current_state["risk_state"]
+        risk_decision = current_state["risk_decision"]
+
+        if portfolio_value is not None:
+            risk_state, risk_decision = self._evaluate_risk_state(current_state)
+            peak_portfolio_value = risk_state["peak_value"]
+            drawdown_pct = float(risk_decision["current_drawdown"])
+            max_drawdown = float(risk_decision["max_drawdown"])
+            circuit_breaker_status = self._resolve_circuit_breaker_status(risk_decision)
+            paused = bool(risk_decision["paused"])
+            paused_until = risk_decision["paused_until"]
+
+        current_state.update(
+            {
+                "circuit_breaker_status": circuit_breaker_status,
+                "drawdown_pct": drawdown_pct,
+                "last_reconciled_at": reconciled_at,
+                "max_drawdown": max_drawdown,
+                "paused": paused,
+                "paused_until": paused_until,
+                "peak_portfolio_value": peak_portfolio_value,
+                "risk_decision": risk_decision,
+                "risk_state": risk_state,
+            }
+        )
+
         if save:
             self.save_state(current_state)
 
         SYSTEM_LOGGER.info(
             "State reconciled portfolio_value=%s positions=%s pending_order_count=%s "
-            "drawdown_pct=%s circuit_breaker_status=%s",
+            "drawdown_pct=%s circuit_breaker_status=%s risk_priority=%s",
             portfolio_value,
             len(positions),
             pending_order_count,
             drawdown_pct,
             circuit_breaker_status,
+            risk_decision["priority"],
         )
         return current_state
+
+    def _default_risk_decision(self) -> dict[str, Any]:
+        return RiskDecision().to_dict()
+
+    def _build_risk_snapshot(self, state: Mapping[str, Any]) -> dict[str, Any]:
+        balance_snapshot = self._unwrap_response_payload(state.get("balance_snapshot", {}))
+        balance_records = self._extract_record_list(
+            balance_snapshot,
+            ("balances", "Balances", "positions", "Positions", "assets", "Assets", "holdings"),
+        )
+        raw_positions = state.get("positions", {})
+        current_positions = raw_positions if isinstance(raw_positions, Mapping) else {}
+        positions: list[dict[str, Any]] = []
+        seen_pairs: set[str] = set()
+
+        for record in balance_records:
+            pair = _first_present(
+                record,
+                "pair",
+                "Pair",
+                "symbol",
+                "Symbol",
+                "asset",
+                "Asset",
+                "coin",
+                "Coin",
+                "currency",
+                "Currency",
+            )
+            quantity = _coerce_float(
+                _first_present(
+                    record,
+                    "quantity",
+                    "Quantity",
+                    "qty",
+                    "Qty",
+                    "position",
+                    "Position",
+                    "amount",
+                    "Amount",
+                    "balance",
+                    "Balance",
+                    "available",
+                    "Available",
+                    "free",
+                    "Free",
+                    "total",
+                    "Total",
+                )
+            )
+            if pair in (None, "") or quantity in (None, 0.0):
+                continue
+
+            market_value = _coerce_float(
+                _first_present(
+                    record,
+                    "usd_value",
+                    "usdValue",
+                    "market_value",
+                    "marketValue",
+                    "value",
+                    "Value",
+                    "notional",
+                    "Notional",
+                )
+            )
+            last_price = _coerce_float(
+                _first_present(
+                    record,
+                    "last_price",
+                    "lastPrice",
+                    "mark_price",
+                    "markPrice",
+                    "price",
+                    "Price",
+                )
+            )
+            if last_price is None and market_value is not None and quantity:
+                last_price = market_value / quantity
+
+            positions.append(
+                {
+                    "entry_price": _coerce_float(
+                        _first_present(
+                            record,
+                            "entry_price",
+                            "entryPrice",
+                            "avg_entry_price",
+                            "avgEntryPrice",
+                            "average_entry_price",
+                            "averageEntryPrice",
+                            "cost_basis",
+                            "costBasis",
+                            "avg_cost",
+                            "avgCost",
+                        )
+                    ),
+                    "last_price": last_price,
+                    "market_value_usd": market_value,
+                    "pair": str(pair),
+                    "quantity": float(quantity),
+                }
+            )
+            seen_pairs.add(str(pair))
+
+        for pair, quantity in current_positions.items():
+            if pair in seen_pairs:
+                continue
+            amount = _coerce_float(quantity)
+            if amount in (None, 0.0):
+                continue
+            positions.append(
+                {
+                    "entry_price": None,
+                    "last_price": None,
+                    "market_value_usd": None,
+                    "pair": str(pair),
+                    "quantity": float(amount),
+                }
+            )
+
+        portfolio_value = _coerce_float(state.get("portfolio_value")) or 0.0
+        return {
+            "cash_usd": 0.0,
+            "pending_orders": list(state.get("pending_orders", [])),
+            "positions": positions,
+            "timestamp": int(datetime.now(timezone.utc).timestamp()),
+            "total_portfolio_value_usd": portfolio_value,
+        }
+
+    def _initialize_risk_state(
+        self,
+        state: Mapping[str, Any],
+        snapshot: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if self.risk_manager is None:
+            raise RuntimeError("Risk manager is not configured.")
+
+        existing_state = state.get("risk_state")
+        if isinstance(existing_state, Mapping) and existing_state:
+            return dict(existing_state)
+
+        risk_state = self.risk_manager.make_initial_state(snapshot)
+        peak_portfolio_value = _coerce_float(state.get("peak_portfolio_value"))
+        if peak_portfolio_value is not None and peak_portfolio_value > 0:
+            risk_state["peak_value"] = peak_portfolio_value
+        max_drawdown = _coerce_float(state.get("max_drawdown"))
+        if max_drawdown is not None:
+            risk_state["max_drawdown"] = max_drawdown
+        paused_until = _coerce_float(state.get("paused_until"))
+        if paused_until is not None:
+            risk_state["paused_until"] = int(paused_until)
+        return risk_state
+
+    def _resolve_risk_priority(
+        self,
+        portfolio_action: str | None,
+        forced_sells: list[dict[str, Any]],
+        block_new_buys: bool,
+    ) -> str:
+        if portfolio_action == "LIQUIDATE_ALL":
+            return "LIQUIDATE_ALL"
+        if portfolio_action == "REDUCE_ALL_50":
+            return "REDUCE_ALL_50"
+        if forced_sells:
+            return "FORCED_SELLS"
+        if block_new_buys:
+            return "BLOCK_NEW_BUYS"
+        return "NONE"
+
+    def _build_risk_decision(
+        self,
+        *,
+        risk_state: Mapping[str, Any],
+        current_drawdown: float,
+        portfolio_action: str | None = None,
+        forced_sells: list[dict[str, Any]] | None = None,
+        block_new_buys: bool = False,
+        reason: str = "ok",
+        paused: bool = False,
+    ) -> dict[str, Any]:
+        orders = forced_sells or []
+        return RiskDecision(
+            portfolio_action=portfolio_action,
+            forced_sells=tuple(dict(order) for order in orders),
+            block_new_buys=block_new_buys,
+            current_drawdown=current_drawdown,
+            max_drawdown=float(risk_state["max_drawdown"]),
+            daily_loss_hit_today=bool(risk_state["daily_loss_hit_today"]),
+            paused_until=risk_state["paused_until"],
+            paused=paused,
+            priority=self._resolve_risk_priority(portfolio_action, orders, block_new_buys),
+            reason=reason,
+        ).to_dict()
+
+    def _resolve_circuit_breaker_status(self, risk_decision: Mapping[str, Any]) -> str:
+        if risk_decision.get("paused"):
+            return "paused"
+        portfolio_action = risk_decision.get("portfolio_action")
+        if portfolio_action == "LIQUIDATE_ALL":
+            return "halt"
+        if portfolio_action == "REDUCE_ALL_50":
+            return "reduce"
+        if self.circuit_breaker is None:
+            return "ok"
+        return self.circuit_breaker.evaluate(float(risk_decision["current_drawdown"]))
+
+    def _evaluate_risk_state(self, state: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        if self.risk_manager is None or self.circuit_breaker is None:
+            raise RuntimeError("Risk components are not configured.")
+
+        snapshot = self._build_risk_snapshot(state)
+        risk_state = self._initialize_risk_state(state, snapshot)
+        now = int(snapshot["timestamp"])
+
+        paused_until = risk_state.get("paused_until")
+        if paused_until is not None and now < int(paused_until):
+            self.risk_manager.rollover_day_if_needed(snapshot, risk_state)
+            self.risk_manager.refresh_pending_exit_pairs(snapshot, risk_state)
+            risk_state, current_drawdown = self.circuit_breaker.update_drawdown(snapshot, risk_state)
+            return risk_state, self._build_risk_decision(
+                risk_state=risk_state,
+                current_drawdown=current_drawdown,
+                block_new_buys=True,
+                paused=True,
+                reason="paused_until",
+            )
+
+        risk_state, portfolio_action, current_drawdown = self.circuit_breaker.check_circuit_breaker(
+            snapshot,
+            risk_state,
+        )
+        if portfolio_action is not None:
+            return risk_state, self._build_risk_decision(
+                risk_state=risk_state,
+                current_drawdown=current_drawdown,
+                portfolio_action=portfolio_action,
+                block_new_buys=True,
+                paused=portfolio_action == "LIQUIDATE_ALL",
+                reason="circuit_breaker",
+            )
+
+        risk_result = self.risk_manager.evaluate_risk(snapshot, risk_state)
+        risk_state = risk_result["state"]
+        forced_sells = list(risk_result["forced_sells"])
+        block_new_buys = bool(risk_result["block_new_buys"])
+        reason = "ok"
+        if forced_sells:
+            reason = "stop_loss"
+        elif block_new_buys:
+            reason = "daily_loss_limit"
+
+        return risk_state, self._build_risk_decision(
+            risk_state=risk_state,
+            current_drawdown=current_drawdown,
+            forced_sells=forced_sells,
+            block_new_buys=block_new_buys,
+            reason=reason,
+        )
 
     def _request_if_available(self, method_name: str, **kwargs: Any) -> Any:
         method = getattr(self.client, method_name, None)
