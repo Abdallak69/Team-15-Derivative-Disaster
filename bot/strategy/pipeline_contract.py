@@ -29,13 +29,13 @@ def current_strategy_pipeline() -> tuple[StrategyPipelineStage, ...]:
         ),
         StrategyPipelineStage(
             name="signal_generation",
-            implemented=False,
-            summary="Runtime signal generation is not yet connected to the operational cycle.",
+            implemented=True,
+            summary="Momentum, mean-reversion, pairs rotation, and sector rotation signals are implemented.",
         ),
         StrategyPipelineStage(
             name="ensemble_weighting",
-            implemented=False,
-            summary="Signal blending and regime-aware weighting are still placeholder logic.",
+            implemented=True,
+            summary="Regime-dependent signal blending (bull/ranging/bear weights) is implemented.",
         ),
         StrategyPipelineStage(
             name="risk_gating",

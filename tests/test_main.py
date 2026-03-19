@@ -340,7 +340,7 @@ class TradingBotTests(unittest.TestCase):
         self.assertFalse(result["strategy_pipeline_ready"])
         self.assertEqual(state["strategy_mode"], "paper")
         self.assertEqual(state["strategy_cycle_status"], "skeleton_only")
-        self.assertIn("signal_generation", " ".join(state["last_strategy_cycle"]["notes"]))
+        self.assertIn("risk_gating", " ".join(state["last_strategy_cycle"]["notes"]))
 
     def test_start_blocks_live_strategy_mode_until_runtime_is_implemented(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

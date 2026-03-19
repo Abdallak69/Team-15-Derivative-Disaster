@@ -17,6 +17,16 @@ Implemented files:
 - `bot/data/ticker_poller.py`
 - `bot/data/universe_builder.py`
 - `bot/main.py`
+- `bot/signals/momentum.py`
+- `bot/signals/mean_reversion.py`
+- `bot/signals/pairs_rotation.py`
+- `bot/signals/sector_rotation.py`
+- `bot/strategy/ensemble.py`
+- `bot/strategy/regime_detector.py`
+- `bot/strategy/portfolio_optimizer.py`
+- `bot/backtest/core_module_backtester.py`
+- `bot/data/binance_fetcher.py`
+- `bot/data/binance_history_store.py`
 
 Supporting files also exist:
 
@@ -131,6 +141,44 @@ Current commands:
 `--poll-once` is the one-shot smoke test for the real polling path without `systemd` or Telegram side effects.
 I only expect it to pass when `.env` contains real testing or competition keys rather than the placeholder values from `.env.example`.
 
+### 7. Signal generation modules
+
+All four signal modules are now implemented and validated.
+
+**Momentum (`bot/signals/momentum.py`):** Cross-sectional momentum ranking. Composite score from 3/5/7-day returns. Filters: RSI ≥ 45, price above 20-EMA, quote volume ≥ 10M USD. Returns top-N `MomentumSignal` dataclasses with normalized scores.
+
+**Mean reversion (`bot/signals/mean_reversion.py`):** RSI/Bollinger Band oversold detection. Signal strength = max(RSI signal, Bollinger signal). Triggers when RSI < 30 or price below lower band. Filters by volume. Returns `MeanReversionSignal` with strength, price, MA, and RSI fields.
+
+**Pairs rotation (`bot/signals/pairs_rotation.py`):** Cointegration-based capital rotation. Screens all symbol pairs for cointegration using OLS hedge ratios, ADF stationarity tests (p < 0.05), and half-life estimation via AR(1). Generates z-score-based weight adjustments when |z| > 2.0. Filters: lookback 60 bars, half-life 1–30 days, max 3 simultaneous pairs.
+
+**Sector rotation (`bot/signals/sector_rotation.py`):** BTC dominance-driven sector allocation. Three regimes based on dominance direction:
+
+| Regime | BTC | ETH | Large Alts | Small Alts |
+|---|---|---|---|---|
+| Bitcoin-led (rising) | 40% | 25% | 25% | 10% |
+| Altcoin rotation (falling) | 15% | 20% | 40% | 25% |
+| Neutral | 30% | 25% | 30% | 15% |
+
+Distributes sector weight equally among assets in each bucket.
+
+### 8. Ensemble combiner
+
+The ensemble combiner (`bot/strategy/ensemble.py`) is now fully implemented with regime-dependent signal blending:
+
+| Signal | BULL | RANGING | BEAR |
+|---|---|---|---|
+| Momentum | 50% | 20% | — |
+| Sector rotation | 20% | — | — |
+| Sentiment overlay | 20% | 30% | 20% |
+| Mean reversion | 10% | 50% | 30% |
+| Cash (unallocated) | — | — | 50% |
+
+Sentiment is a post-hoc multiplier (clamped 0.5–1.5): F&G < 25 → ×1.3, F&G > 75 → ×0.7. Returns an `EnsembleResult` with target weights, per-signal contributions, and cash allocation.
+
+### 9. Core module backtester
+
+`bot/backtest/core_module_backtester.py` evaluates momentum, mean-reversion, and regime detection against historical Binance klines. Fetches and caches 1d/1h klines via `BinanceFetcher` + `BinanceHistoryStore` (sqlite). Supports train/validation splits. Computes Sharpe, Sortino, max drawdown, profit factor, hit rate, and win/loss ratio per module. Run via `python -m bot.main --backtest`.
+
 ## Critical technical details the team needs to know
 
 - Roostoo does not provide historical candles or a history endpoint. Our own polling database is the foundation for the rest of the bot.
@@ -153,7 +201,7 @@ Current checks passing:
 - `pytest tests -q`
 - `python -m py_compile $(rg --files -g '*.py')`
 
-There are currently 44 passing unit tests covering:
+There are currently 59 passing unit tests covering:
 
 - auth helpers
 - Binance historical pagination and caching paths
@@ -165,20 +213,27 @@ There are currently 44 passing unit tests covering:
 - state persistence
 - reconciliation and heartbeat behavior
 - rebalance flattening behavior
-- staged core-module backtests
+- staged core-module backtests (momentum, mean-reversion, regime)
 - regime classification confirmation behavior
-- richer momentum and mean-reversion signal logic
+- momentum signal ranking and filter logic
+- mean-reversion signal threshold and strength logic
+- portfolio optimizer cash floor normalization
 - Telegram alert delivery helpers
+- configuration validation
 
 ## What is not implemented yet
 
 These planned modules are still incomplete, placeholder-level, or not production-ready:
 
-- sentiment ingestion
-- real risk enforcement
-- live execution path
+- sentiment ingestion (`bot/data/sentiment_fetcher.py` exists but not wired into the trading cycle)
+- real risk enforcement (risk manager module exists but not connected to live cycle)
+- rebalance planning (target-weight → order-planning flow not wired)
+- live execution path (intentionally disabled)
+- backtest notebook (`notebooks/backtest_results.ipynb` pending real historical data)
 
 We should not treat the repo as competition-ready for actual trading yet.
+
+The signal pipeline (all 4 signal modules + ensemble combiner) is fully implemented and tested. The remaining gap before a live trading cycle is risk gating and order execution — both owned by the Infrastructure & Risk Engineer.
 
 ## Where we are on the project roadmap
 
@@ -193,13 +248,16 @@ Done:
 - first Roostoo client slice
 - first HMAC/auth slice
 - first ticker polling and local DB slice
+- all 4 signal modules (momentum, mean-reversion, pairs rotation, sector rotation)
+- ensemble combiner with regime-dependent weight matrix
+- core-module backtester (momentum, mean-reversion, regime detection)
+- Binance historical fetch + sqlite caching
 
 Still remaining from Phase 0:
 
 - remaining live-trading endpoint integration
-- ensemble combiner
-- risk manager
-- backtest notebook
+- risk manager wired into trading cycle
+- backtest notebook (blocked on real historical data download)
 
 ### Phase 1
 
