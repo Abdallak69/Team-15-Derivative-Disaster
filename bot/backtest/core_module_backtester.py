@@ -477,6 +477,7 @@ class CoreModuleBacktester:
                         "open_time": entry_time,
                         "open_date": entry_time.normalize(),
                         "close_time": exit_time,
+                        "close_date": exit_time.normalize(),
                         "holding_hours": int((exit_time - entry_time).total_seconds() // 3600),
                         "return_pct": (exit_price / entry_price) - 1.0,
                         "exit_reason": exit_reason,
@@ -493,9 +494,9 @@ class CoreModuleBacktester:
             }
             return empty_summary, pd.Series(dtype=float)
 
-        daily_returns = trades_frame.groupby("open_date")["return_pct"].mean().sort_index()
-        train_frame = trades_frame[trades_frame["open_date"].isin(train_dates)]
-        validation_frame = trades_frame[trades_frame["open_date"].isin(validation_dates)]
+        daily_returns = trades_frame.groupby("close_date")["return_pct"].mean().sort_index()
+        train_frame = trades_frame[trades_frame["close_date"].isin(train_dates)]
+        validation_frame = trades_frame[trades_frame["close_date"].isin(validation_dates)]
         return {
             "train": self._summarize_mean_reversion_split(train_frame),
             "validation": self._summarize_mean_reversion_split(validation_frame),

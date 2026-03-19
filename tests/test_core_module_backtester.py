@@ -8,6 +8,9 @@ from datetime import timezone
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
+
+import pandas as pd
 
 from bot.backtest import CoreModuleBacktester
 from bot.data import BinanceFetcher
@@ -118,6 +121,66 @@ class CoreModuleBacktesterTests(unittest.TestCase):
         self.assertIn("mean_reversion", report)
         self.assertIn("regime_detection", report)
         self.assertEqual(report["momentum"]["validation"]["evaluated_days"], 5)
+
+    def test_mean_reversion_attributes_realized_returns_to_close_date(self) -> None:
+        config = {
+            "mean_reversion": {
+                "rsi_oversold": 30.0,
+                "bollinger_period": 20,
+                "bollinger_std": 2.0,
+                "min_volume_usd": 0.0,
+                "max_hold_days": 2,
+                "stop_loss_pct": 0.20,
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            backtester = CoreModuleBacktester(
+                config=config,
+                history_store=BinanceHistoryStore(Path(tmp_dir) / "binance_history.db"),
+                fetcher=FakeFetcher(),
+            )
+            start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+            index = pd.date_range(start=start, periods=30, freq="h", tz="UTC")
+            frame = pd.DataFrame(
+                {
+                    "open": [100.0] * len(index),
+                    "high": [101.0] * len(index),
+                    "low": [99.0] * len(index),
+                    "close": [100.0] * len(index),
+                    "volume": [1.0] * len(index),
+                    "quote_volume": [1_000_000.0] * len(index),
+                    "trade_count": [1.0] * len(index),
+                },
+                index=index,
+            )
+            indicator_frame = pd.DataFrame(
+                {
+                    "price": [100.0] + ([95.0] * 24) + [101.0] + ([101.0] * 4),
+                    "moving_average": [110.0] + ([100.0] * 29),
+                    "lower_band": [90.0] * len(index),
+                    "rsi": [20.0] * len(index),
+                    "volume_24h": [1_000_000.0] * len(index),
+                    "signal_strength": [1.0] + ([0.0] * 29),
+                },
+                index=index,
+            )
+
+            with patch.object(CoreModuleBacktester, "_load_symbol_frame", return_value=frame):
+                with patch(
+                    "bot.backtest.core_module_backtester.build_mean_reversion_frame",
+                    return_value=indicator_frame,
+                ):
+                    report, daily_returns = backtester._backtest_mean_reversion(
+                        symbols=("BTCUSDT",),
+                        start_time_ms=0,
+                        train_dates=[index[0].normalize()],
+                        validation_dates=[index[25].normalize()],
+                    )
+
+        self.assertEqual(list(daily_returns.index), [index[25].normalize()])
+        self.assertEqual(report["train"]["trade_count"], 0)
+        self.assertEqual(report["validation"]["trade_count"], 1)
 
 
 if __name__ == "__main__":

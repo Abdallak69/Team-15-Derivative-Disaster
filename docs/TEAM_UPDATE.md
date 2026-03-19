@@ -124,9 +124,11 @@ Current commands:
 - `python -c "from bot.main import TradingBot"`
 - `python -m bot.main --status`
 - `python -m bot.main --startup-check`
+- `python -m bot.main --poll-once`
 - `python -m bot.main`
 
-`--startup-check` is important because it runs the real bootstrap path once and exits. I also wired deploy scripts to use it.
+`--startup-check` is important because it runs the real bootstrap path once and exits. I use it for local and first-host bootstrap checks before the one-shot poll smoke test.
+`--poll-once` is the one-shot smoke test for the real polling path without `systemd` or Telegram side effects.
 I only expect it to pass when `.env` contains real testing or competition keys rather than the placeholder values from `.env.example`.
 
 ## Critical technical details the team needs to know
@@ -138,7 +140,7 @@ I only expect it to pass when `.env` contains real testing or competition keys r
 - The running bot now uses the signed balance and pending-order paths for operational reconciliation, but it still does not place or cancel live orders from the runtime loop.
 - The target architecture and target deployment flow are documented in `Technicals/05_Architecture_Overview.md` and `Technicals/07_Deployment_Runbook.md`.
 - The current operational contract for new code is `docs/03_operations_runbook.md`.
-- The current service and deploy flow now use `python -m bot.main --startup-check` instead of a cheap import-only check.
+- The current service and deploy flow now use a one-shot bootstrap plus poll smoke test before `systemd` restart.
 - `deploy/setup.sh` now provisions swap, enables NTP, and synchronizes the current checkout into `/opt/trading-bot` before creating the venv.
 - The rebalance helper now correctly generates flattening sells for positions that disappear from the target portfolio.
 - `python -m bot.main --startup-check` now exercises the real signed reconciliation path as part of bootstrap.

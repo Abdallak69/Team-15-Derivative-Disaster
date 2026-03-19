@@ -37,28 +37,38 @@ python -c "from bot.main import TradingBot"
 ## Quick start
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
 pip install -r requirements.txt
-cp .env.example .env
-cat docs/03_operations_runbook.md
-cat docs/TEAM_UPDATE.md
+python -c "from bot.main import TradingBot; print('IMPORT_OK')"
 python -m bot.main --status
 pytest tests -q
-python -m bot.main --backtest-core-modules --symbols BTCUSD,ETHUSD,SOLUSD --history-days 30 --train-days 15 --validation-days 15
 ```
 
-After I replace the placeholder values in `.env` with real testing keys, I run:
+After I replace the Roostoo placeholders in `.env` with real testing keys and leave Telegram unset or placeholder, I run:
 
 ```bash
+cp .env.example .env
+chmod 600 .env
 python -m bot.main --startup-check
+python -m bot.main --poll-once
+```
+
+Only after those commands pass do I move on to `deploy/setup.sh`, `deploy/deploy.sh`, or the EC2/systemd/Telegram steps in `Technicals/07_Deployment_Runbook.md`.
+
+For the first-three-module validation pass:
+
+```bash
+python -m bot.main --backtest-core-modules --symbols BTCUSD,ETHUSD,SOLUSD --history-days 30 --train-days 15 --validation-days 15
 ```
 
 ## Notes
 
 - `Technicals/` documents the intended end-state bot, not just the currently implemented slice.
 - `docs/03_operations_runbook.md` is the operational contract new code and deploy procedures should follow.
-- `python -m bot.main --startup-check` exercises the real bootstrap path once, including clock sync, universe loading, and signed-state reconciliation, then exits.
+- `python -m bot.main --startup-check` exercises the production bootstrap path once, including clock sync, universe loading, and signed-state reconciliation, then exits.
+- `python -m bot.main --poll-once` bootstraps and persists one ticker poll without sending Telegram alerts. Use it as the smoke test before `systemd`.
 - `python -m bot.main --backtest-core-modules` fetches/caches Binance klines and evaluates only the first three modules from the strategy document. If local polling has already produced `data/bot_state.json`, omit `--symbols` to reuse that universe.
 - `python -m bot.main` starts the long-running polling loop used by the systemd service.
 - `runtime.strategy_mode` defaults to `disabled`. `paper` records explicit skeleton-only strategy cycles, and `live` is intentionally blocked until the full signal-to-risk-to-execution path exists.

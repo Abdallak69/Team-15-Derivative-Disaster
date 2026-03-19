@@ -24,6 +24,7 @@ if [[ "${REPO_ROOT}" != "${APP_DIR}" ]]; then
     --exclude ".git/" \
     --exclude ".env" \
     --exclude ".env.*" \
+    --exclude ".venv/" \
     --exclude "venv/" \
     --exclude "logs/" \
     --exclude "data/*.db" \
@@ -39,13 +40,6 @@ if [[ "${REPO_ROOT}" != "${APP_DIR}" ]]; then
 fi
 
 sudo chown -R "${APP_USER}:${APP_USER}" "${APP_DIR}"
-
-sed \
-  -e "s|__APP_USER__|${APP_USER}|g" \
-  -e "s|__APP_DIR__|${APP_DIR}|g" \
-  "${REPO_ROOT}/deploy/tradingbot.service" | sudo tee "${SERVICE_PATH}" >/dev/null
-sudo systemctl daemon-reload
-sudo systemctl enable tradingbot.service >/dev/null
 
 if [[ ! -f /swapfile ]]; then
   sudo fallocate -l 4G /swapfile
@@ -80,7 +74,17 @@ python -m bot.main --status
 
 if [[ -f .env ]]; then
   python -m bot.main --startup-check
+  python -m bot.main --poll-once
 else
-  echo "Skipped startup check because .env does not exist yet."
-  echo "Create .env with real testing keys, then rerun: python -m bot.main --startup-check"
+  echo "Skipped startup and polling smoke checks because .env does not exist yet."
+  echo "Create .env with real testing keys, then rerun:"
+  echo "  python -m bot.main --startup-check"
+  echo "  python -m bot.main --poll-once"
 fi
+
+sed \
+  -e "s|__APP_USER__|${APP_USER}|g" \
+  -e "s|__APP_DIR__|${APP_DIR}|g" \
+  "${REPO_ROOT}/deploy/tradingbot.service" | sudo tee "${SERVICE_PATH}" >/dev/null
+sudo systemctl daemon-reload
+sudo systemctl enable tradingbot.service >/dev/null

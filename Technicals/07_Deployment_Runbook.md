@@ -9,7 +9,54 @@
 
 ---
 
-## SECTION A: One-Time EC2 Setup (Do Once, Before Competition)
+## SECTION 0: Local Readiness Gate (Must Pass Before EC2, systemd, or Telegram)
+
+**Estimated time: 15 minutes**
+**When:** Before touching AWS or Telegram
+
+### 0.1. Create a Local Virtual Environment and Install Dependencies
+
+```bash
+cd <YOUR_LOCAL_REPO_CHECKOUT>
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+**Checkpoint:** `pip install -r requirements.txt` completes without errors.
+
+### 0.2. Verify Import, Status, and Tests Locally
+
+```bash
+python -c "from bot.main import TradingBot; print('IMPORT_OK')"
+python -m bot.main --status
+pytest tests -q
+```
+
+**Checkpoint:** import prints `IMPORT_OK`, status prints a dictionary, and the test suite passes.
+
+### 0.3. Verify Real Startup and One Poll Locally with Testing Keys
+
+```bash
+cp .env.example .env
+chmod 600 .env
+
+# Edit .env and set ONLY the Roostoo testing keys first.
+# Leave TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID unset or placeholder for now.
+
+python -m bot.main --startup-check
+python -m bot.main --poll-once
+sqlite3 data/live_ohlcv.db "SELECT COUNT(*), MAX(last_polled_at) FROM ohlcv_1m;"
+```
+
+**Checkpoint:** `--startup-check` finishes without auth or timestamp errors, `--poll-once` reports non-zero `snapshot_count` and `stored_snapshot_count`, and sqlite shows rows in `ohlcv_1m`.
+
+**STOP:** Do not do EC2, systemd, or Telegram setup until Section 0 passes on the local machine.
+
+---
+
+## SECTION A: One-Time EC2 Setup (Only After Section 0 Passes Locally)
 
 **Estimated time: 30 minutes**
 **When:** Immediately after receiving AWS credentials (expected 16 March)
@@ -90,24 +137,52 @@ mkdir -p logs data
 
 **Checkpoint:** `python -c "from bot.main import TradingBot; print('OK')"` prints `OK`.
 
-### A4. Create the .env File
+### A4. Create a Minimal Testing .env File (Roostoo Only)
 
 ```bash
-# Create .env with testing keys FIRST
+# Create .env with testing keys FIRST.
+# Do NOT add Telegram yet.
 cat > /opt/trading-bot/.env << 'EOF'
 # Roostoo API Keys — TESTING
 ROOSTOO_API_KEY=<PASTE_TESTING_API_KEY_HERE>
 ROOSTOO_SECRET_KEY=<PASTE_TESTING_SECRET_HERE>
-
-# Telegram Bot
-TELEGRAM_BOT_TOKEN=<PASTE_BOT_TOKEN_HERE>
-TELEGRAM_CHAT_ID=<PASTE_CHAT_ID_HERE>
 
 # Environment flag
 ENVIRONMENT=testing
 EOF
 
 # Lock down permissions
+chmod 600 /opt/trading-bot/.env
+```
+
+**Checkpoint:** `/opt/trading-bot/.env` contains only testing Roostoo keys and `ENVIRONMENT=testing`.
+
+### A5. Smoke-Test the Bot Directly on EC2
+
+```bash
+cd /opt/trading-bot
+source venv/bin/activate
+
+python -c "from bot.main import TradingBot; print('IMPORT_OK')"
+python -m bot.main --status
+python -m bot.main --startup-check
+python -m bot.main --poll-once
+sqlite3 data/live_ohlcv.db "SELECT COUNT(*), MAX(last_polled_at) FROM ohlcv_1m;"
+```
+
+**Checkpoint:** import prints `IMPORT_OK`, `--startup-check` succeeds, `--poll-once` reports non-zero `snapshot_count` and `stored_snapshot_count`, and sqlite shows rows in `ohlcv_1m`.
+
+### A6. Add Telegram and Competition Secrets
+
+```bash
+# Append Telegram to the testing .env only after the direct EC2 smoke test passes
+cat >> /opt/trading-bot/.env << 'EOF'
+
+# Telegram Bot
+TELEGRAM_BOT_TOKEN=<PASTE_BOT_TOKEN_HERE>
+TELEGRAM_CHAT_ID=<PASTE_CHAT_ID_HERE>
+EOF
+
 chmod 600 /opt/trading-bot/.env
 ```
 
@@ -130,9 +205,9 @@ EOF
 chmod 600 /opt/trading-bot/.env.competition
 ```
 
-**Checkpoint:** `cat /opt/trading-bot/.env` shows testing keys. `.env.competition` exists separately.
+**Checkpoint:** `grep -E 'TELEGRAM|ENVIRONMENT' /opt/trading-bot/.env` shows Telegram plus `ENVIRONMENT=testing`. `.env.competition` exists separately.
 
-### A5. Install systemd Service
+### A7. Install systemd Service
 
 ```bash
 sudo cat > /etc/systemd/system/tradingbot.service << 'EOF'
@@ -164,7 +239,7 @@ sudo systemctl enable tradingbot.service
 
 **Checkpoint:** `sudo systemctl status tradingbot` shows "loaded" (not yet active).
 
-### A6. Start Data Collection (Testing Phase)
+### A8. Start Data Collection (Testing Phase)
 
 ```bash
 # Start the bot in testing mode — it will begin polling ticker data
@@ -174,7 +249,7 @@ sudo systemctl status tradingbot.service
 tail -20 logs/system.log
 ```
 
-**Checkpoint:** Logs show ticker polling activity. Telegram sends startup message.
+**Checkpoint:** Logs show ticker polling activity. Telegram sends the startup message now that Telegram is configured.
 
 ---
 
@@ -387,22 +462,36 @@ git pull origin main
 # 5. Install any new dependencies
 pip install -r requirements.txt --quiet
 
-# 6. Sanity check — does the code import?
+# 6. Sanity checks
 python -c "from bot.main import TradingBot; print('Import OK')"
 # MUST print "Import OK" before proceeding
+python -m bot.main --status
 
 # 7. Run unit tests (if available and fast)
 python -m pytest tests/ -x -q 2>/dev/null && echo "Tests PASS" || echo "Tests FAIL — investigate"
+
+# 8. Stop the running service before the one-shot poll smoke test
+sudo systemctl stop tradingbot.service
+
+# 9. Verify the new code can bootstrap and poll once without systemd
+if python -m bot.main --poll-once; then
+  echo "Poll smoke test PASS"
+else
+  echo "Poll smoke test FAIL — bringing tradingbot.service back up"
+  sudo systemctl start tradingbot.service
+  sudo systemctl status tradingbot.service
+  exit 1
+fi
 ```
 
 ### D2. Deploy
 
 ```bash
-# 8. Restart the service
-sudo systemctl restart tradingbot.service
+# 10. Start the service again
+sudo systemctl start tradingbot.service
 sleep 15
 
-# 9. Verify restart
+# 11. Verify restart
 sudo systemctl status tradingbot.service
 tail -30 logs/system.log
 # Look for: "Bot Started" message
@@ -412,12 +501,12 @@ tail -30 logs/system.log
 ### D3. Post-Deployment
 
 ```bash
-# 10. Tag the deployment
+# 12. Tag the deployment
 git tag -a v1.X-description -m "Brief description of change"
 git push --tags
 
-# 11. Wait for next heartbeat and verify metrics are sane
-# 12. Post to WhatsApp: "Deployed vX.X: [description]. Bot running normally."
+# 13. Wait for next heartbeat and verify metrics are sane
+# 14. Post to WhatsApp: "Deployed vX.X: [description]. Bot running normally."
 ```
 
 ---
@@ -462,7 +551,7 @@ sudo systemctl start tradingbot.service
 2. Launch a new instance from the provided template
 3. Wait 2-3 minutes
 4. Connect via Session Manager
-5. Re-run Section A (A2 through A5)
+5. Re-run Section A (A2 through A8)
 6. Clone repo, create .env with COMPETITION keys
 7. Restore bot_state.json if you have a backup
 8. Start the service

@@ -185,8 +185,14 @@ class TradingBot:
         self.config = load_yaml_config(self.config_path)
         configure_logging(self.logging_config_path, ROOT_DIR)
 
-        self.environment = str(
+        configured_environment = str(
             read_config_value(self.config, "runtime", "environment", default=self.environment)
+        )
+        environment_override = os.getenv("ENVIRONMENT")
+        self.environment = (
+            environment_override.strip()
+            if environment_override is not None and environment_override.strip()
+            else configured_environment
         )
         self.poll_interval_seconds = int(
             read_config_value(
@@ -546,6 +552,24 @@ class TradingBot:
         self.start()
         return self.stop()
 
+    def poll_once(self) -> dict[str, Any]:
+        """Bootstrap and execute one poll cycle without scheduler or Telegram side effects."""
+        poll_result = self.run_poll_cycle()
+        state = self._state_with_defaults(self.load_state())
+        return {
+            "db_path": str(self.db_path),
+            "environment": self.environment,
+            "is_bootstrapped": self.is_bootstrapped,
+            "last_poll_at": state["last_poll_at"],
+            "pending_order_count": state["pending_order_count"],
+            "poll_interval_seconds": self.poll_interval_seconds,
+            "portfolio_value": state["portfolio_value"],
+            "snapshot_count": poll_result["snapshot_count"],
+            "stored_snapshot_count": poll_result["stored_snapshot_count"],
+            "telegram_configured": self.alerter is not None,
+            "universe_size": len(self.universe),
+        }
+
     def stop(self) -> dict[str, Any]:
         """Stop the scheduler loop."""
         if self.scheduler is not None:
@@ -864,6 +888,7 @@ class TradingBot:
         merged = self.default_state()
         if state:
             merged.update(state)
+        merged["environment"] = self.environment
         return merged
 
     def _quarantine_corrupt_state_file(self) -> Path | None:
@@ -1060,6 +1085,11 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         help="Run startup/bootstrap once and exit.",
     )
     parser.add_argument(
+        "--poll-once",
+        action="store_true",
+        help="Run startup/bootstrap plus one ticker poll, then exit.",
+    )
+    parser.add_argument(
         "--status",
         action="store_true",
         help="Print the current bot status without network calls.",
@@ -1109,6 +1139,8 @@ if __name__ == "__main__":
 
     if args.status:
         print(bot.status())
+    elif args.poll_once:
+        print(bot.poll_once())
     elif args.startup_check:
         print(bot.startup_check())
     elif args.backtest_core_modules:

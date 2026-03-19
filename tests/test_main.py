@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from bot.main import _resolve_backtest_symbols
 from bot.main import _build_cli_parser
@@ -141,6 +143,19 @@ class TradingBotTests(unittest.TestCase):
         self.assertEqual(status["strategy_cycle_status"], "disabled")
         self.assertFalse(status["strategy_pipeline_ready"])
 
+    def test_environment_prefers_env_var_over_yaml(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "strategy_params.yaml"
+            _write_strategy_config(config_path)
+            with patch.dict(os.environ, {"ENVIRONMENT": "competition"}):
+                bot = TradingBot(
+                    config_path=config_path,
+                    state_path=Path(tmp_dir) / "bot_state.json",
+                    db_path=Path(tmp_dir) / "live_ohlcv.db",
+                )
+
+        self.assertEqual(bot.environment, "competition")
+
     def test_bootstrap_state_creates_state_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir) / "strategy_params.yaml"
@@ -179,6 +194,25 @@ class TradingBotTests(unittest.TestCase):
         self.assertEqual(state["positions"], {"BTCUSD": 0.1})
         self.assertIsNotNone(state["last_reconciled_at"])
 
+    def test_run_poll_cycle_refreshes_persisted_environment_from_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "strategy_params.yaml"
+            _write_strategy_config(config_path)
+            with patch.dict(os.environ, {"ENVIRONMENT": "competition"}):
+                bot = TradingBot(
+                    config_path=config_path,
+                    state_path=Path(tmp_dir) / "bot_state.json",
+                    db_path=Path(tmp_dir) / "live_ohlcv.db",
+                    client=StubRoostooClient(),
+                )
+                bot.save_state({"environment": "testing"})
+
+                bot.run_poll_cycle()
+                state = bot.load_state()
+
+        self.assertEqual(bot.environment, "competition")
+        self.assertEqual(state["environment"], "competition")
+
     def test_startup_check_runs_bootstrap_and_stops(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir) / "strategy_params.yaml"
@@ -214,6 +248,30 @@ class TradingBotTests(unittest.TestCase):
         self.assertTrue(status["telegram_configured"])
         self.assertEqual(alerter.messages[0][0], "Bot Started")
         self.assertIn("portfolio_value=1000000.0", alerter.messages[0][1])
+
+    def test_poll_once_runs_single_poll_cycle_without_startup_alert(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "strategy_params.yaml"
+            _write_strategy_config(config_path)
+            alerter = StubAlerter()
+            bot = TradingBot(
+                config_path=config_path,
+                state_path=Path(tmp_dir) / "bot_state.json",
+                db_path=Path(tmp_dir) / "live_ohlcv.db",
+                client=StubRoostooClient(),
+                alerter=alerter,
+            )
+
+            result = bot.poll_once()
+            state = bot.load_state()
+
+        self.assertTrue(bot.is_bootstrapped)
+        self.assertEqual(result["snapshot_count"], 2)
+        self.assertEqual(result["stored_snapshot_count"], 2)
+        self.assertEqual(result["pending_order_count"], 1)
+        self.assertEqual(result["portfolio_value"], 1000000.0)
+        self.assertEqual(state["last_stored_snapshot_count"], 2)
+        self.assertEqual(alerter.messages, [])
 
     def test_send_heartbeat_updates_state_when_delivered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -328,6 +386,15 @@ class MainCliTests(unittest.TestCase):
         args = parser.parse_args(["--status"])
 
         self.assertTrue(args.status)
+        self.assertFalse(args.poll_once)
+        self.assertFalse(args.startup_check)
+
+    def test_poll_once_flag_parses_expected_value(self) -> None:
+        parser = _build_cli_parser()
+        args = parser.parse_args(["--poll-once"])
+
+        self.assertTrue(args.poll_once)
+        self.assertFalse(args.status)
         self.assertFalse(args.startup_check)
 
     def test_backtest_flags_parse_expected_values(self) -> None:

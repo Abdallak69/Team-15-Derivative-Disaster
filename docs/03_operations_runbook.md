@@ -39,21 +39,28 @@ What is still on the path to the end product:
 
 ## Required Verification
 
-Use these commands as the baseline checks for this repository:
+Treat these commands as the hard local gate before EC2, systemd, or Telegram setup:
 
 ```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
 python -c "from bot.main import TradingBot; print('IMPORT_OK')"
-pytest tests -q
 python -m bot.main --status
+pytest tests -q
 ```
 
-After `.env` contains real testing or competition credentials with `chmod 600`:
+After `.env` contains real testing credentials with `chmod 600`, and before Telegram is configured:
 
 ```bash
 python -m bot.main --startup-check
+python -m bot.main --poll-once
 ```
 
-`--startup-check` now exercises the production bootstrap path, including clock sync, universe load, and signed-state reconciliation. If Telegram secrets are configured, it also sends the startup alert.
+`--startup-check` exercises the production bootstrap path, including clock sync, universe load, and signed-state reconciliation. `--poll-once` bootstraps and persists a single ticker poll without sending Telegram alerts, so it is the preferred smoke test before `systemd`.
+
+On an EC2 host that is already running `tradingbot.service`, stop the service before running `python -m bot.main --poll-once` manually to avoid concurrent sqlite and state-file writes.
 
 Keep `runtime.strategy_mode` at `disabled` or `paper` while the project is still in skeleton phase. `live` is intentionally blocked in code until signal generation, weighting, risk gating, rebalance planning, and execution are wired end to end.
 
