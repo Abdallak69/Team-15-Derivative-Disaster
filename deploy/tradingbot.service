@@ -1,0 +1,17 @@
+[Unit]
+Description=Roostoo Quant Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ssm-user
+WorkingDirectory=/opt/trading-bot
+EnvironmentFile=/opt/trading-bot/.env
+ExecStart=/opt/trading-bot/venv/bin/python -m bot.main
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+
