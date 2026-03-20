@@ -55,7 +55,11 @@ python -m bot.main --startup-check
 python -m bot.main --poll-once
 ```
 
-Only after those commands pass do I move on to `deploy/setup.sh`, `deploy/deploy.sh`, or the EC2/systemd/Telegram steps in `Technicals/07_Deployment_Runbook.md`.
+Only after those commands pass do I move on to `deploy/setup.sh` (Ubuntu EC2), `deploy/deploy.sh`, or the EC2 steps in `docs/03_operations_runbook.md` (**includes Amazon Linux 2023 + Session Manager**) and `Technicals/07_Deployment_Runbook.md`.
+
+### EC2 / hackathon deploy (starting point)
+
+Follow **`docs/03_operations_runbook.md` → “Starting point (canonical flow)”** and **“EC2: Amazon Linux 2023 + Session Manager”**. Public clone URL: `https://github.com/Abdallak69/Team-15-Derivative-Disaster.git`. After `git pull` on the server, restart the bot. **Console may stay quiet** — tail `logs/system.log` to see activity.
 
 For the first-three-module validation pass:
 
@@ -71,5 +75,5 @@ python -m bot.main --backtest-core-modules --symbols BTCUSD,ETHUSD,SOLUSD --hist
 - `python -m bot.main --poll-once` bootstraps and persists one ticker poll without sending Telegram alerts. Use it as the smoke test before `systemd`.
 - `python -m bot.main --backtest-core-modules` fetches/caches Binance klines and evaluates only the first three modules from the strategy document. If local polling has already produced `data/bot_state.json`, omit `--symbols` to reuse that universe.
 - `python -m bot.main` starts the long-running polling loop used by the systemd service.
-- `runtime.strategy_mode` defaults to `disabled`. `paper` records strategy cycles in dry-run mode, and `live` sends real orders through the Roostoo API — ensure the full pipeline is verified in `paper` mode first.
+- `runtime.strategy_mode` in `config/strategy_params.yaml` controls the strategy loop: `disabled`, `paper` (dry-run orders), or `live` (real orders via Roostoo). The repo is set for competition use with **`live`**; switch to **`paper`** locally if you want dry-run only.
 - All signal, risk, and execution modules are implemented. See `docs/TEAM_UPDATE.md` for current status.

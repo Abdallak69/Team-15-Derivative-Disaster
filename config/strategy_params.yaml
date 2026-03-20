@@ -9,7 +9,8 @@ runtime:
   heartbeat_interval_seconds: 3600
   clock_sync_interval_seconds: 3600
   sentiment_refresh_interval_seconds: 14400
-  strategy_mode: paper
+  # paper = dry-run only; live = real orders via Roostoo API (use one bot instance).
+  strategy_mode: live
   competition_start: null
   day1_max_deploy: 0.30
   day1_stop_loss_pct: 0.02

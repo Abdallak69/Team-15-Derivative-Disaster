@@ -84,8 +84,131 @@ If local polling/bootstrap has already written `data/bot_state.json`, `--symbols
 - AWS region: `ap-southeast-2` (Sydney)
 - app directory: `/opt/trading-bot`
 - service file: `deploy/tradingbot.service`
-- setup script: `deploy/setup.sh`
+- setup script: `deploy/setup.sh` (uses **Ubuntu/apt**; see below for **Amazon Linux 2023**)
 - deployment script: `deploy/deploy.sh`
+
+## EC2: Amazon Linux 2023 + Session Manager (Hackathon template)
+
+Use this path when the instance comes from the Roostoo **Hackathon** launch template (Amazon Linux 2023, `t3.medium`, **Session Manager** only). The shell may show `sh-5.2$`; optional: run `bash` for a nicer prompt.
+
+`deploy/setup.sh` assumes **apt** (Ubuntu). On Amazon Linux use **dnf** and the steps below instead.
+
+### Starting point (canonical flow)
+
+Use this order every time you set up or refresh the server:
+
+1. **Region** `ap-southeast-2` → launch instance from the hackathon template → **Session Manager** to connect ([Roostoo AWS guide](https://roostoo.notion.site/Hackathon-Guide-How-to-Sign-In-AWS-and-Launch-Your-Bot-309ba22fed798071b4dde6d1e8666816)).
+2. **System packages + swap** — Section **1** below (`dnf`, swap, NTP).
+3. **Clone this repo** (public team fork):
+
+   `git clone https://github.com/Abdallak69/Team-15-Derivative-Disaster.git /opt/trading-bot`  
+   then `cd /opt/trading-bot`, `python3.11 -m venv venv`, `pip install -r requirements.txt`.
+
+4. **Secrets** — `cp .env.example .env` **once**, `chmod 600 .env`, edit keys in `nano`. **Never run `cp .env.example .env` again** after real keys are saved (it overwrites `.env`).
+5. **Smoke test** — `source venv/bin/activate`, then `--startup-check` and `--poll-once`.
+6. **Live trading** — `config/strategy_params.yaml` sets `runtime.strategy_mode` (`live` = real API orders, `paper` = dry-run only). Adjust before long runs if you need paper mode. Restart the bot after any config change.
+7. **Updates** — `git pull` in `/opt/trading-bot`, then **stop** the old process (`kill` / `systemctl stop`) and start again (tmux or systemd).
+8. **Logs** — Operational logs go to **`logs/system.log`** and trades to **`logs/trades.jsonl`**; the process may print little to the console. Use `tail -f logs/system.log` in a second Session Manager tab to confirm activity.
+
+### EC2 sections (detailed)
+
+### 1. System prep (swap + time sync)
+
+```bash
+sudo dnf update -y
+sudo dnf install -y git python3.11 python3.11-pip tmux sqlite wget
+
+# 4G swap (recommended on 4 GiB RAM)
+if [[ ! -f /swapfile ]]; then
+  sudo fallocate -l 4G /swapfile
+  sudo chmod 600 /swapfile
+  sudo mkswap /swapfile
+  sudo swapon /swapfile
+  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+fi
+sudo sysctl vm.swappiness=10
+grep -q '^vm.swappiness=10' /etc/sysctl.conf || echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf
+
+sudo timedatectl set-ntp true
+timedatectl status   # expect NTP / synchronized
+```
+
+If `python3.11` is not in your repos, install whatever `python3` is 3.10+ (`python3 --version`) and use that for the venv below.
+
+### 2. Code and virtualenv
+
+```bash
+sudo mkdir -p /opt/trading-bot
+sudo chown "$(id -u):$(id -g)" /opt/trading-bot
+cd /opt/trading-bot
+
+# Public repo (HTTPS + token only if you use a private fork)
+git clone https://github.com/Abdallak69/Team-15-Derivative-Disaster.git .
+
+python3.11 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+mkdir -p data logs
+```
+
+### 3. Secrets
+
+```bash
+cp .env.example .env
+chmod 600 .env
+nano .env   # ROOSTOO_* testing keys first; optional Telegram after smoke tests
+```
+
+### 4. Smoke tests (same contract as local)
+
+```bash
+cd /opt/trading-bot && source venv/bin/activate
+python -c "from bot.main import TradingBot; print('IMPORT_OK')"
+python -m bot.main --status
+pytest tests -q
+python -m bot.main --startup-check
+python -m bot.main --poll-once
+```
+
+### 5. Run continuously
+
+**Option A — tmux** (matches the [Roostoo AWS guide](https://roostoo.notion.site/Hackathon-Guide-How-to-Sign-In-AWS-and-Launch-Your-Bot-309ba22fed798071b4dde6d1e8666816)):
+
+```bash
+tmux new -s bot
+cd /opt/trading-bot && source venv/bin/activate && python -m bot.main
+# Detach: Ctrl+B, then D. Reattach: tmux attach -t bot
+```
+
+**Option B — systemd** (survives disconnects; user is usually `ssm-user` on Session Manager):
+
+```bash
+sudo tee /etc/systemd/system/tradingbot.service >/dev/null <<EOF
+[Unit]
+Description=Roostoo Quant Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$(whoami)
+WorkingDirectory=/opt/trading-bot
+EnvironmentFile=/opt/trading-bot/.env
+ExecStart=/opt/trading-bot/venv/bin/python -m bot.main
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now tradingbot.service
+sudo systemctl status tradingbot.service
+```
+
+Stop the bot: `sudo systemctl stop tradingbot.service` (or exit/kill the tmux session).
 
 ## Rules For New Code
 

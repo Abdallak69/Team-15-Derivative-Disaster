@@ -177,13 +177,21 @@ class StubAlerter:
 
 class TradingBotTests(unittest.TestCase):
     def test_status_exposes_expected_fields(self) -> None:
-        bot = TradingBot()
-        status = bot.status()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config_path = tmp_path / "strategy_params.yaml"
+            _write_strategy_config(config_path, strategy_mode="disabled")
+            bot = TradingBot(
+                config_path=config_path,
+                state_path=tmp_path / "bot_state.json",
+                db_path=tmp_path / "live_ohlcv.db",
+            )
+            status = bot.status()
 
         self.assertEqual(status["environment"], bot.environment)
         self.assertFalse(status["is_running"])
         self.assertFalse(status["is_bootstrapped"])
-        self.assertTrue(status["config_path"].endswith("config/strategy_params.yaml"))
+        self.assertTrue(str(status["config_path"]).endswith("strategy_params.yaml"))
         self.assertIn("last_reconciled_at", status)
         self.assertIn("pending_order_count", status)
         self.assertIn("trading_cycle_interval_seconds", status)
