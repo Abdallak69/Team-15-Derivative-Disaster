@@ -122,6 +122,8 @@ def optimize_weights(
     max_position_pct: float = 0.10,
     max_sector_pct: float = 0.30,
     cash_floor_overrides: Mapping[str, float] | None = None,
+    win_rates: Mapping[str, float] | None = None,
+    avg_win_loss: Mapping[str, float] | None = None,
 ) -> dict[str, float]:
     """Full optimization pipeline: inverse-vol → Kelly cap → sector cap → cash floor.
 
@@ -147,7 +149,7 @@ def optimize_weights(
         return {}
 
     scaled = {s: w * investable for s, w in weighted.items()}
-    capped = _apply_kelly_cap(scaled, max_position_pct)
+    capped = _apply_kelly_cap(scaled, max_position_pct, win_rates=win_rates, avg_win_loss=avg_win_loss)
     sector_capped = _apply_sector_cap(capped, max_sector_pct)
     final = _renormalize(sector_capped, investable)
     return final
@@ -169,6 +171,8 @@ class PortfolioOptimizer:
         *,
         volatilities: Mapping[str, float] | None = None,
         regime: str = "ranging",
+        win_rates: Mapping[str, float] | None = None,
+        avg_win_loss: Mapping[str, float] | None = None,
     ) -> dict[str, float]:
         """Return optimized weights respecting all constraints."""
         overrides = {
@@ -183,4 +187,6 @@ class PortfolioOptimizer:
             max_position_pct=self.max_position_pct,
             max_sector_pct=self.max_sector_pct,
             cash_floor_overrides=overrides,
+            win_rates=win_rates,
+            avg_win_loss=avg_win_loss,
         )

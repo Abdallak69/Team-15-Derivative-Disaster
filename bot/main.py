@@ -44,6 +44,7 @@ from bot.risk import RiskManager
 from bot.signals.momentum import rank_assets_by_momentum
 from bot.signals.mean_reversion import find_oversold_assets
 from bot.signals.momentum import calculate_rsi
+from bot.signals.pairs_rotation import pairs_rotation_weights as compute_pairs_weights
 from bot.signals.sector_rotation import sector_rotation_weights
 from bot.strategy import PortfolioOptimizer
 from bot.strategy import ensemble_combine
@@ -342,10 +343,14 @@ class TradingBot:
         if self.alerter is None:
             self.alerter = self._build_telegram_alerter()
         if self.risk_manager is None:
+            take_profit_pct = float(
+                read_config_value(self.config, "risk", "take_profit_pct", default=0.08)
+            )
             self.risk_manager = RiskManager(
                 max_position_pct=max_position_pct,
                 stop_loss_pct=stop_loss_pct,
                 daily_loss_limit=self.daily_loss_limit,
+                take_profit_pct=take_profit_pct,
             )
         if self.circuit_breaker is None:
             self.circuit_breaker = CircuitBreaker(
@@ -366,8 +371,12 @@ class TradingBot:
             cash_floor_bear = float(
                 read_config_value(self.config, "risk", "cash_floor_bear", default=0.50)
             )
+            max_sector_pct = float(
+                read_config_value(self.config, "risk", "max_sector_pct", default=0.30)
+            )
             self.portfolio_optimizer = PortfolioOptimizer(
                 max_position_pct=max_position_pct,
+                max_sector_pct=max_sector_pct,
                 cash_floor_bull=cash_floor_bull,
                 cash_floor_ranging=cash_floor_ranging,
                 cash_floor_bear=cash_floor_bear,
@@ -732,6 +741,15 @@ class TradingBot:
             coalesce=True,
             max_instances=1,
         )
+        scheduler.add_job(
+            self.run_daily_maintenance,
+            "interval",
+            seconds=86400,
+            id="daily_maintenance",
+            next_run_time=next_run_time + timedelta(seconds=86400),
+            coalesce=True,
+            max_instances=1,
+        )
         try:
             scheduler.start()
         except (KeyboardInterrupt, SystemExit):
@@ -788,6 +806,7 @@ class TradingBot:
         last_operational_monotonic = time.monotonic()
         last_heartbeat_monotonic = time.monotonic()
         last_sentiment_monotonic = time.monotonic()
+        last_maintenance_monotonic = time.monotonic()
         try:
             self.run_poll_cycle()
             self.run_operational_cycle()
@@ -816,9 +835,24 @@ class TradingBot:
                 ):
                     self.send_heartbeat()
                     last_heartbeat_monotonic = current_monotonic
+                if current_monotonic - last_maintenance_monotonic >= 86400:
+                    self.run_daily_maintenance()
+                    last_maintenance_monotonic = current_monotonic
                 self.run_poll_cycle()
         except KeyboardInterrupt:
             self.stop()
+
+    def run_daily_maintenance(self) -> None:
+        """Prune old candle data and run garbage collection (24-hour job)."""
+        import gc
+        if self.store is not None:
+            try:
+                deleted = self.store.prune(max_days=30)
+                SYSTEM_LOGGER.info("Daily maintenance: pruned %d old candle rows", deleted)
+            except Exception:
+                SYSTEM_LOGGER.warning("Daily maintenance: prune failed", exc_info=True)
+        gc.collect()
+        SYSTEM_LOGGER.info("Daily maintenance: gc.collect completed")
 
     def send_heartbeat(self) -> dict[str, Any]:
         """Send an operational heartbeat when Telegram monitoring is configured."""
@@ -1500,6 +1534,29 @@ class TradingBot:
             except Exception:
                 SYSTEM_LOGGER.warning("Sector rotation failed", exc_info=True)
 
+            pairs_weights: dict[str, float] = {}
+            try:
+                if not closes.empty and len(closes) >= 60:
+                    pairs_cfg = self.config.get("pairs_rotation", {})
+                    pr_lookback = int(pairs_cfg.get("lookback", 60))
+                    pr_adf = float(pairs_cfg.get("adf_threshold", 0.05))
+                    pr_min_hl = float(pairs_cfg.get("min_half_life", 1.0))
+                    pr_max_hl = float(pairs_cfg.get("max_half_life", 30.0))
+                    pr_z_entry = float(pairs_cfg.get("z_entry", 2.0))
+                    pr_max_pairs = int(pairs_cfg.get("max_pairs", 3))
+                    pairs_weights = compute_pairs_weights(
+                        closes.iloc[-pr_lookback:],
+                        max_pairs=pr_max_pairs,
+                        adf_pvalue_threshold=pr_adf,
+                        min_half_life=pr_min_hl,
+                        max_half_life=pr_max_hl,
+                        z_entry_threshold=pr_z_entry,
+                    )
+                    if pairs_weights:
+                        SIGNALS_LOGGER.info("Pairs rotation signals: %d assets", len(pairs_weights))
+            except Exception:
+                SYSTEM_LOGGER.warning("Pairs rotation failed", exc_info=True)
+
         except Exception:
             SYSTEM_LOGGER.warning("Signal generation failed", exc_info=True)
             notes.append("Signal generation encountered errors.")
@@ -1510,6 +1567,7 @@ class TradingBot:
             momentum_weights=momentum_weights or None,
             mean_reversion_weights=mean_reversion_weights or None,
             sector_rotation_weights=sector_weights or None,
+            pairs_rotation_weights=pairs_weights or None,
             sentiment_multiplier=self.last_sentiment_multiplier,
         )
         SIGNALS_LOGGER.info(
@@ -1574,11 +1632,35 @@ class TradingBot:
             if self.risk_manager is not None:
                 self.risk_manager.stop_loss_pct = float(read_config_value(self.config, "risk", "stop_loss_pct", default=0.03))
 
+        win_rates: dict[str, float] | None = None
+        avg_wl: dict[str, float] | None = None
+        try:
+            if not closes.empty and len(closes) > 7:
+                daily_rets = closes.pct_change().iloc[-30:]
+                wr: dict[str, float] = {}
+                awl: dict[str, float] = {}
+                for col in daily_rets.columns:
+                    s = daily_rets[col].dropna()
+                    if len(s) < 10:
+                        continue
+                    wins = s[s > 0]
+                    losses = s[s < 0]
+                    if not wins.empty and not losses.empty and abs(float(losses.mean())) > 0:
+                        wr[col] = float((s > 0).mean())
+                        awl[col] = float(wins.mean()) / abs(float(losses.mean()))
+                if wr:
+                    win_rates = wr
+                    avg_wl = awl
+        except Exception:
+            SYSTEM_LOGGER.warning("Win-rate / avg-win-loss computation failed", exc_info=True)
+
         if self.portfolio_optimizer is not None:
             target_weights = self.portfolio_optimizer.optimize(
                 combined_weights,
                 volatilities=volatilities,
                 regime=regime,
+                win_rates=win_rates,
+                avg_win_loss=avg_wl,
             )
         else:
             target_weights = dict(combined_weights)

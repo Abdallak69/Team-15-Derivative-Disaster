@@ -15,26 +15,32 @@ def combine_weight_maps(weight_maps: Sequence[Mapping[str, float]]) -> dict[str,
     return combined
 
 
-# Architecture-documented regime weights:
-# BULL:   Momentum 50%, Sector 20%, Sentiment 20%, MeanRev 10%
-# RANGE:  MeanRev 50%, Sentiment 30%, Momentum 20%
-# BEAR:   Cash 50%, MeanRev 30%, Sentiment 20%
+# Architecture-documented regime weights (Doc 02 Section 3.3):
+#   Sentiment is applied as a post-hoc scalar multiplier (0.5x-1.5x) on all
+#   combined weights — it does not produce its own {symbol: weight} map.
+#   The "sentiment" budget from the original doc is redistributed to the
+#   active signal modules so the matrix sums correctly.
+#
+# BULL:   Momentum 60%, Sector 25%, MeanRev 15%            (sentiment as multiplier)
+# RANGE:  MeanRev 40%, Momentum 30%, Pairs 15%, Sector 15% (sentiment as multiplier)
+# BEAR:   MeanRev 30%, Pairs 10%, Sector 10%  + 50% cash   (sentiment as multiplier)
 
 _REGIME_WEIGHTS: dict[str, dict[str, float]] = {
     "bull": {
-        "momentum": 0.50,
-        "sector_rotation": 0.20,
-        "sentiment": 0.20,
-        "mean_reversion": 0.10,
+        "momentum": 0.60,
+        "sector_rotation": 0.25,
+        "mean_reversion": 0.15,
     },
     "ranging": {
-        "mean_reversion": 0.50,
-        "sentiment": 0.30,
-        "momentum": 0.20,
+        "mean_reversion": 0.40,
+        "momentum": 0.30,
+        "pairs_rotation": 0.15,
+        "sector_rotation": 0.15,
     },
     "bear": {
         "mean_reversion": 0.30,
-        "sentiment": 0.20,
+        "pairs_rotation": 0.10,
+        "sector_rotation": 0.10,
         # remaining 50% is held as cash (not allocated to any signal)
     },
 }
@@ -56,6 +62,7 @@ def ensemble_combine(
     momentum_weights: Mapping[str, float] | None = None,
     mean_reversion_weights: Mapping[str, float] | None = None,
     sector_rotation_weights: Mapping[str, float] | None = None,
+    pairs_rotation_weights: Mapping[str, float] | None = None,
     sentiment_multiplier: float = 1.0,
 ) -> EnsembleResult:
     """Combine signal weight maps with regime-dependent blending.
@@ -76,6 +83,8 @@ def ensemble_combine(
         signal_maps["mean_reversion"] = mean_reversion_weights
     if sector_rotation_weights:
         signal_maps["sector_rotation"] = sector_rotation_weights
+    if pairs_rotation_weights:
+        signal_maps["pairs_rotation"] = pairs_rotation_weights
 
     combined: dict[str, float] = {}
     contributions: dict[str, dict[str, float]] = {}

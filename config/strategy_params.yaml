@@ -38,6 +38,8 @@ mean_reversion:
 
 risk:
   max_position_pct: 0.10
+  max_sector_pct: 0.30
+  take_profit_pct: 0.08
   cash_floor_bull: 0.20
   cash_floor_ranging: 0.40
   cash_floor_bear: 0.50

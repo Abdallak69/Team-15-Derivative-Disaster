@@ -229,6 +229,17 @@ class OhlcvStore:
             rows = connection.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
+    def prune(self, max_days: int = 30) -> int:
+        """Delete candles older than *max_days*. Returns rows deleted."""
+        cutoff = datetime.now(timezone.utc) - __import__("datetime").timedelta(days=max_days)
+        cutoff_iso = cutoff.replace(second=0, microsecond=0).isoformat()
+        self.initialize()
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "DELETE FROM ohlcv_1m WHERE candle_ts < ?", (cutoff_iso,)
+            )
+            return cursor.rowcount
+
     @staticmethod
     def _minute_bucket(timestamp: datetime) -> str:
         normalized = timestamp.astimezone(timezone.utc).replace(second=0, microsecond=0)

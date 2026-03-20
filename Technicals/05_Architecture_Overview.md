@@ -128,8 +128,9 @@ The bot's `main.py` runs a single-threaded event loop using `APScheduler`. This 
 │    → telegram_alerter.send_heartbeat()           │
 │    → sync clock with /v3/serverTime              │
 │                                                  │
-│  Every 4 hours:                                  │
+│  Every 5 minutes (trading cycle):                │
 │    → regime_detector.update()                    │
+│  Every 4 hours:                                  │
 │    → sentiment_fetcher.update()                  │
 │                                                  │
 │  Every 24 hours:                                 │

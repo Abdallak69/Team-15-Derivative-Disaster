@@ -132,6 +132,16 @@ def _validate_semantics(config: Mapping[str, Any], *, path: Path) -> None:
             f"Invalid runtime.strategy_mode in {path}: expected one of disabled, paper, live"
         )
 
+    day1_deploy = read_config_value(config, "runtime", "day1_max_deploy")
+    if day1_deploy is not None:
+        _require_fraction(day1_deploy, path=path, label="runtime.day1_max_deploy")
+    day2_deploy = read_config_value(config, "runtime", "day2_max_deploy")
+    if day2_deploy is not None:
+        _require_fraction(day2_deploy, path=path, label="runtime.day2_max_deploy")
+    day1_stop = read_config_value(config, "runtime", "day1_stop_loss_pct")
+    if day1_stop is not None:
+        _require_fraction(day1_stop, path=path, label="runtime.day1_stop_loss_pct")
+
     ema_fast = _require_positive_integer(
         read_config_value(config, "regime", "ema_fast_period"),
         path=path,
@@ -218,6 +228,12 @@ def _validate_semantics(config: Mapping[str, Any], *, path: Path) -> None:
         path=path,
         label="risk.max_position_pct",
     )
+    max_sector = read_config_value(config, "risk", "max_sector_pct")
+    if max_sector is not None:
+        _require_fraction(max_sector, path=path, label="risk.max_sector_pct")
+    take_profit = read_config_value(config, "risk", "take_profit_pct")
+    if take_profit is not None:
+        _require_fraction(take_profit, path=path, label="risk.take_profit_pct")
     for key in ("cash_floor_bull", "cash_floor_ranging", "cash_floor_bear"):
         _require_fraction(
             read_config_value(config, "risk", key),
