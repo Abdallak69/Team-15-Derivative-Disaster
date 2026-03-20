@@ -64,7 +64,12 @@ def rank_assets_by_momentum(
     if closes.empty:
         return []
 
-    required_history = max(max(lookback_periods, default=1), rsi_period, ema_period) + 1
+    macd_slow = 26
+    macd_signal_period = 9
+    required_history = max(
+        max(lookback_periods, default=1), rsi_period, ema_period,
+        macd_slow + macd_signal_period,
+    ) + 1
     raw_candidates: list[dict[str, float | str]] = []
 
     for symbol in closes.columns:
@@ -75,6 +80,13 @@ def rank_assets_by_momentum(
         current_price = float(price_series.iloc[-1])
         current_ema = float(price_series.ewm(span=ema_period, adjust=False).mean().iloc[-1])
         current_rsi = float(calculate_rsi(price_series, period=rsi_period).iloc[-1])
+
+        macd_line = (
+            price_series.ewm(span=12, adjust=False).mean()
+            - price_series.ewm(span=macd_slow, adjust=False).mean()
+        )
+        macd_signal = macd_line.ewm(span=macd_signal_period, adjust=False).mean()
+        macd_histogram = float((macd_line - macd_signal).iloc[-1])
 
         volume_series = (
             quote_volumes[symbol].dropna()
@@ -88,6 +100,7 @@ def rank_assets_by_momentum(
             or current_rsi < rsi_threshold
             or current_price <= current_ema
             or current_volume < min_volume_usd
+            or macd_histogram <= 0
         ):
             continue
 

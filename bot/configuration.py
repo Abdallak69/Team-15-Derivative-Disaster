@@ -162,38 +162,19 @@ def _validate_semantics(config: Mapping[str, Any], *, path: Path) -> None:
         label="regime.confirmation_periods",
     )
 
-    lookback_days = read_config_value(config, "momentum", "lookback_days")
-    if not isinstance(lookback_days, list) or not lookback_days:
-        raise ConfigError(f"Invalid momentum.lookback_days in {path}: expected a non-empty list")
-    for index, value in enumerate(lookback_days):
+    lookback_periods = read_config_value(config, "momentum", "lookback_periods")
+    if not isinstance(lookback_periods, list) or not lookback_periods:
+        raise ConfigError(f"Invalid momentum.lookback_periods in {path}: expected a non-empty list")
+    for index, value in enumerate(lookback_periods):
         _require_positive_integer(
             value,
             path=path,
-            label=f"momentum.lookback_days[{index}]",
+            label=f"momentum.lookback_periods[{index}]",
         )
     _require_percentage(
         read_config_value(config, "momentum", "rsi_threshold"),
         path=path,
         label="momentum.rsi_threshold",
-    )
-    macd_fast = _require_positive_integer(
-        read_config_value(config, "momentum", "macd_fast"),
-        path=path,
-        label="momentum.macd_fast",
-    )
-    macd_slow = _require_positive_integer(
-        read_config_value(config, "momentum", "macd_slow"),
-        path=path,
-        label="momentum.macd_slow",
-    )
-    if macd_slow <= macd_fast:
-        raise ConfigError(
-            f"Invalid MACD periods in {path}: momentum.macd_slow must be greater than momentum.macd_fast"
-        )
-    _require_positive_integer(
-        read_config_value(config, "momentum", "macd_signal"),
-        path=path,
-        label="momentum.macd_signal",
     )
     _require_positive_integer(
         read_config_value(config, "momentum", "top_n_assets"),

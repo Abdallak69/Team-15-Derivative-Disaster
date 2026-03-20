@@ -56,7 +56,7 @@ def _annualized_sharpe(returns: pd.Series, *, periods_per_year: int) -> float | 
     cleaned = returns.dropna().astype(float)
     if len(cleaned) < 2:
         return None
-    volatility = float(cleaned.std(ddof=0))
+    volatility = float(cleaned.std(ddof=1))
     if volatility == 0.0:
         return None
     return float((cleaned.mean() / volatility) * math.sqrt(periods_per_year))
@@ -323,7 +323,7 @@ class CoreModuleBacktester:
         rsi_threshold = float(self._config_value("momentum", "rsi_threshold", default=45.0))
         top_n_assets = int(self._config_value("momentum", "top_n_assets", default=8))
         min_volume_usd = float(
-            self._config_value("mean_reversion", "min_volume_usd", default=10_000_000.0)
+            self._config_value("momentum", "min_volume_usd", default=10_000_000.0)
         )
 
         returns_by_day: dict[pd.Timestamp, float] = {}

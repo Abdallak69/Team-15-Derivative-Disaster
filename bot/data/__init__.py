@@ -7,6 +7,8 @@ from .binance_history_store import BinanceHistoryStore
 from .ohlcv_store import TickerSnapshot
 from .ohlcv_store import OhlcvStore
 from .sentiment_fetcher import SentimentFetcher
+from .sentiment_fetcher import SentimentSnapshot
+from .sentiment_fetcher import compute_deployment_multiplier
 from .ticker_poller import PollResult
 from .ticker_poller import TickerPoller
 from .universe_builder import MarketDefinition
@@ -20,6 +22,8 @@ __all__ = [
     "MarketDefinition",
     "PollResult",
     "SentimentFetcher",
+    "SentimentSnapshot",
+    "compute_deployment_multiplier",
     "TickerSnapshot",
     "TickerPoller",
     "UniverseBuilder",

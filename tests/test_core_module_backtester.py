@@ -64,7 +64,7 @@ class CoreModuleBacktesterTests(unittest.TestCase):
                 "confirmation_periods": 2,
             },
             "momentum": {
-                "lookback_days": [1, 2],
+                "lookback_periods": [1, 2],
                 "rsi_threshold": 0.0,
                 "top_n_assets": 1,
             },

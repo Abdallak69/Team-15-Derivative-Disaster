@@ -34,11 +34,8 @@ def _write_strategy_config(path: Path, *, strategy_mode: str = "disabled") -> No
                 "  volatility_threshold_multiplier: 1.5",
                 "  confirmation_periods: 2",
                 "momentum:",
-                "  lookback_days: [3, 5, 7]",
+                "  lookback_periods: [3, 5, 7]",
                 "  rsi_threshold: 45",
-                "  macd_fast: 12",
-                "  macd_slow: 26",
-                "  macd_signal: 9",
                 "  top_n_assets: 8",
                 "mean_reversion:",
                 "  rsi_oversold: 30",
@@ -78,8 +75,8 @@ class StubRoostooClient:
 
     def get_exchange_info(self) -> list[dict[str, object]]:
         return [
-            {"Pair": "BTCUSD", "Status": "TRADING"},
-            {"Pair": "ETHUSD", "Status": "TRADING"},
+            {"Pair": "BTCUSD", "Status": "TRADING", "PricePrecision": 2, "AmountPrecision": 6, "MiniOrder": 0.00001},
+            {"Pair": "ETHUSD", "Status": "TRADING", "PricePrecision": 2, "AmountPrecision": 5, "MiniOrder": 0.0001},
         ]
 
     def get_ticker(self) -> list[dict[str, str]]:
@@ -193,7 +190,7 @@ class TradingBotTests(unittest.TestCase):
         self.assertIn("heartbeat_interval_seconds", status)
         self.assertEqual(status["strategy_mode"], "disabled")
         self.assertEqual(status["strategy_cycle_status"], "disabled")
-        self.assertFalse(status["strategy_pipeline_ready"])
+        self.assertTrue(status["strategy_pipeline_ready"])
 
     def test_environment_prefers_env_var_over_yaml(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -222,6 +219,26 @@ class TradingBotTests(unittest.TestCase):
 
             self.assertEqual(created_path, state_path)
             self.assertTrue(state_path.exists())
+
+    def test_bootstrap_stores_market_definitions_with_precision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "strategy_params.yaml"
+            _write_strategy_config(config_path)
+            bot = TradingBot(
+                config_path=config_path,
+                state_path=Path(tmp_dir) / "bot_state.json",
+                db_path=Path(tmp_dir) / "live_ohlcv.db",
+                client=StubRoostooClient(),
+            )
+
+            bot.bootstrap()
+
+        self.assertIn("BTCUSD", bot._market_definitions)
+        self.assertIn("ETHUSD", bot._market_definitions)
+        btc_def = bot._market_definitions["BTCUSD"]
+        self.assertEqual(btc_def.price_precision, 2)
+        self.assertEqual(btc_def.amount_precision, 6)
+        self.assertAlmostEqual(btc_def.min_order_size, 0.00001)
 
     def test_run_poll_cycle_bootstraps_and_persists_pipeline_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -366,7 +383,7 @@ class TradingBotTests(unittest.TestCase):
 
         self.assertEqual(result["strategy_mode"], "disabled")
         self.assertEqual(result["strategy_cycle_status"], "disabled")
-        self.assertFalse(result["strategy_pipeline_ready"])
+        self.assertTrue(result["strategy_pipeline_ready"])
         self.assertEqual(state["strategy_mode"], "disabled")
         self.assertEqual(state["strategy_cycle_status"], "disabled")
         self.assertEqual(
@@ -389,14 +406,12 @@ class TradingBotTests(unittest.TestCase):
             state = bot.load_state()
 
         self.assertEqual(result["strategy_mode"], "paper")
-        self.assertEqual(result["strategy_cycle_status"], "skeleton_only")
-        self.assertFalse(result["strategy_pipeline_ready"])
+        self.assertIn(result["strategy_cycle_status"], ("paper_executed", "no_portfolio_data"))
+        self.assertTrue(result["strategy_pipeline_ready"])
         self.assertEqual(state["strategy_mode"], "paper")
-        self.assertEqual(state["strategy_cycle_status"], "skeleton_only")
-        self.assertNotIn("risk_gating", " ".join(state["last_strategy_cycle"]["notes"]))
-        self.assertIn("rebalance_planning", " ".join(state["last_strategy_cycle"]["notes"]))
+        self.assertIn(state["strategy_cycle_status"], ("paper_executed", "no_portfolio_data"))
 
-    def test_start_blocks_live_strategy_mode_until_runtime_is_implemented(self) -> None:
+    def test_start_accepts_live_strategy_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir) / "strategy_params.yaml"
             _write_strategy_config(config_path, strategy_mode="live")
@@ -407,8 +422,9 @@ class TradingBotTests(unittest.TestCase):
                 client=StubRoostooClient(),
             )
 
-            with self.assertRaisesRegex(RuntimeError, "intentionally blocked"):
-                bot.start()
+            status = bot.start()
+            self.assertEqual(status["strategy_mode"], "live")
+            bot.stop()
 
     def test_extract_positions_requires_explicit_position_mapping(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

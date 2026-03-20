@@ -25,19 +25,30 @@ from bot.configuration import load_yaml_config
 from bot.data import BinanceFetcher
 from bot.data import BinanceHistoryStore
 from bot.data import OhlcvStore
+from bot.data import SentimentFetcher
+from bot.data import MarketDefinition
 from bot.data import TickerPoller
 from bot.data import UniverseBuilder
 from bot.environment import SecretConfigurationError
 from bot.environment import load_secret_from_env
 from bot.environment import load_project_env
+from bot.execution import generate_rebalance_orders
+from bot.execution import execute_orders
 from bot.logging_utils import configure_logging
+from bot.monitoring import MetricsTracker
 from bot.monitoring import TelegramAlerter
 from bot.monitoring import compute_return
 from bot.risk import CircuitBreaker
 from bot.risk import RiskDecision
 from bot.risk import RiskManager
+from bot.signals.momentum import rank_assets_by_momentum
+from bot.signals.mean_reversion import find_oversold_assets
+from bot.signals.momentum import calculate_rsi
+from bot.signals.sector_rotation import sector_rotation_weights
+from bot.strategy import PortfolioOptimizer
+from bot.strategy import ensemble_combine
+from bot.strategy import detect_regime
 from bot.strategy import strategy_pipeline_ready
-from bot.strategy import summarize_strategy_pipeline_gaps
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -167,6 +178,7 @@ class TradingBot:
     daily_loss_limit: float = 0.02
     min_rebalance_drift: float = 0.15
     order_spacing_seconds: int = 65
+    sentiment_refresh_interval_seconds: int = 14400
     client: RoostooClient | None = None
     store: OhlcvStore | None = None
     universe_builder: UniverseBuilder = field(default_factory=UniverseBuilder)
@@ -174,11 +186,24 @@ class TradingBot:
     risk_manager: RiskManager | None = None
     circuit_breaker: CircuitBreaker | None = None
     poller: TickerPoller | None = None
+    portfolio_optimizer: PortfolioOptimizer | None = None
+    sentiment_fetcher: SentimentFetcher | None = None
+    metrics_tracker: MetricsTracker | None = None
     is_running: bool = False
     is_bootstrapped: bool = False
     universe: tuple[str, ...] = field(default_factory=tuple)
+    last_sentiment_multiplier: float = field(default=1.0, init=False, repr=False)
+    last_regime: str = field(default="ranging", init=False, repr=False)
     config: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
     scheduler: Any = field(default=None, init=False, repr=False)
+    _ema_fast_period: int = field(default=20, init=False, repr=False)
+    _ema_slow_period: int = field(default=50, init=False, repr=False)
+    _vol_threshold_mult: float = field(default=1.5, init=False, repr=False)
+    _market_definitions: dict[str, MarketDefinition] = field(default_factory=dict, init=False, repr=False)
+    _regime_streak_count: int = field(default=0, init=False, repr=False)
+    _regime_streak_value: str = field(default="unknown", init=False, repr=False)
+    _confirmation_periods: int = field(default=2, init=False, repr=False)
+    _competition_start_time: datetime | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         load_project_env(_project_path(".env"))
@@ -226,6 +251,14 @@ class TradingBot:
                 default=self.clock_sync_interval_seconds,
             )
         )
+        self.sentiment_refresh_interval_seconds = int(
+            read_config_value(
+                self.config,
+                "runtime",
+                "sentiment_refresh_interval_seconds",
+                default=self.sentiment_refresh_interval_seconds,
+            )
+        )
         self.strategy_mode = str(
             read_config_value(
                 self.config,
@@ -270,6 +303,24 @@ class TradingBot:
                 default=self.order_spacing_seconds,
             )
         )
+        self._ema_fast_period = int(
+            read_config_value(self.config, "regime", "ema_fast_period", default=20)
+        )
+        self._ema_slow_period = int(
+            read_config_value(self.config, "regime", "ema_slow_period", default=50)
+        )
+        self._vol_threshold_mult = float(
+            read_config_value(self.config, "regime", "volatility_threshold_multiplier", default=1.5)
+        )
+        self._confirmation_periods = int(
+            read_config_value(self.config, "regime", "confirmation_periods", default=2)
+        )
+
+        competition_start_raw = read_config_value(
+            self.config, "runtime", "competition_start", default=None,
+        )
+        if competition_start_raw:
+            self._competition_start_time = datetime.fromisoformat(str(competition_start_raw))
 
         if self.client is None:
             api_base_url = str(
@@ -305,6 +356,35 @@ class TradingBot:
             self.store = OhlcvStore(self.db_path)
         if self.poller is None:
             self.poller = TickerPoller(client=self.client, store=self.store, pairs=self.universe)
+        if self.portfolio_optimizer is None:
+            cash_floor_bull = float(
+                read_config_value(self.config, "risk", "cash_floor_bull", default=0.20)
+            )
+            cash_floor_ranging = float(
+                read_config_value(self.config, "risk", "cash_floor_ranging", default=0.40)
+            )
+            cash_floor_bear = float(
+                read_config_value(self.config, "risk", "cash_floor_bear", default=0.50)
+            )
+            self.portfolio_optimizer = PortfolioOptimizer(
+                max_position_pct=max_position_pct,
+                cash_floor_bull=cash_floor_bull,
+                cash_floor_ranging=cash_floor_ranging,
+                cash_floor_bear=cash_floor_bear,
+            )
+        if self.sentiment_fetcher is None:
+            self.sentiment_fetcher = SentimentFetcher(
+                extreme_fear=int(read_config_value(self.config, "sentiment", "fgi_extreme_fear", default=20)),
+                fear=int(read_config_value(self.config, "sentiment", "fgi_fear", default=35)),
+                greed=int(read_config_value(self.config, "sentiment", "fgi_greed", default=65)),
+                extreme_greed=int(read_config_value(self.config, "sentiment", "fgi_extreme_greed", default=80)),
+                mult_extreme_fear=float(read_config_value(self.config, "sentiment", "multiplier_extreme_fear", default=1.30)),
+                mult_fear=float(read_config_value(self.config, "sentiment", "multiplier_fear", default=1.15)),
+                mult_greed=float(read_config_value(self.config, "sentiment", "multiplier_greed", default=0.85)),
+                mult_extreme_greed=float(read_config_value(self.config, "sentiment", "multiplier_extreme_greed", default=0.70)),
+            )
+        if self.metrics_tracker is None:
+            self.metrics_tracker = MetricsTracker()
 
         SYSTEM_LOGGER.info(
             "Initialized trading bot environment=%s poll_interval_seconds=%s "
@@ -333,6 +413,7 @@ class TradingBot:
         """Return the baseline persisted state structure."""
         return {
             "balance_snapshot": {},
+            "btc_dominance": None,
             "clock_offset_ms": self.client.clock_offset_ms if self.client else 0,
             "circuit_breaker_status": "ok",
             "cumulative_return": 0.0,
@@ -354,6 +435,7 @@ class TradingBot:
             "peak_portfolio_value": None,
             "portfolio_value": None,
             "positions": {},
+            "previous_btc_dominance": None,
             "regime": "unknown",
             "risk_decision": self._default_risk_decision(),
             "risk_state": {},
@@ -455,6 +537,7 @@ class TradingBot:
         self.store.initialize()
         server_time_ms = self.sync_server_time()
         exchange_info = self.client.get_exchange_info()
+        self._market_definitions = self.universe_builder.parse_exchange_info(exchange_info)
         self.universe = tuple(self.universe_builder.build_from_exchange_info(exchange_info))
         self.poller.pairs = self.universe
         self.is_bootstrapped = True
@@ -640,6 +723,15 @@ class TradingBot:
             coalesce=True,
             max_instances=1,
         )
+        scheduler.add_job(
+            self.refresh_sentiment,
+            "interval",
+            seconds=self.sentiment_refresh_interval_seconds,
+            id="sentiment_refresh",
+            next_run_time=next_run_time,
+            coalesce=True,
+            max_instances=1,
+        )
         try:
             scheduler.start()
         except (KeyboardInterrupt, SystemExit):
@@ -695,9 +787,11 @@ class TradingBot:
         last_sync_monotonic = time.monotonic()
         last_operational_monotonic = time.monotonic()
         last_heartbeat_monotonic = time.monotonic()
+        last_sentiment_monotonic = time.monotonic()
         try:
             self.run_poll_cycle()
             self.run_operational_cycle()
+            self.refresh_sentiment()
             while self.is_running:
                 time.sleep(self.poll_interval_seconds)
                 current_monotonic = time.monotonic()
@@ -710,6 +804,12 @@ class TradingBot:
                 ):
                     self.run_operational_cycle()
                     last_operational_monotonic = current_monotonic
+                if (
+                    current_monotonic - last_sentiment_monotonic
+                    >= self.sentiment_refresh_interval_seconds
+                ):
+                    self.refresh_sentiment()
+                    last_sentiment_monotonic = current_monotonic
                 if (
                     current_monotonic - last_heartbeat_monotonic
                     >= self.heartbeat_interval_seconds
@@ -1092,13 +1192,49 @@ class TradingBot:
                 reason="circuit_breaker",
             )
 
-        risk_result = self.risk_manager.evaluate_risk(snapshot, risk_state)
+        atr_values: dict[str, float] | None = None
+        if self.store is not None:
+            try:
+                position_pairs = [str(p["pair"]) for p in snapshot["positions"]]
+                if position_pairs:
+                    candles = self.store.fetch_candles(
+                        pairs=position_pairs,
+                        since=datetime.now(timezone.utc) - timedelta(days=14),
+                    )
+                    if candles:
+                        import pandas as _pd
+                        _cdf = _pd.DataFrame(candles)
+                        atr_values = {}
+                        for pair in position_pairs:
+                            _pair_data = _cdf[_cdf["pair"] == pair].sort_values("candle_ts")
+                            if len(_pair_data) < 14:
+                                continue
+                            _h = _pair_data["high"].astype(float)
+                            _l = _pair_data["low"].astype(float)
+                            _c = _pair_data["close"].astype(float)
+                            _cp = _c.shift(1)
+                            _tr = _pd.concat([
+                                (_h - _l),
+                                (_h - _cp).abs(),
+                                (_l - _cp).abs(),
+                            ], axis=1).max(axis=1)
+                            atr_values[pair] = float(_tr.iloc[-14:].mean())
+            except Exception:
+                SYSTEM_LOGGER.warning("ATR computation for risk failed", exc_info=True)
+
+        risk_result = self.risk_manager.evaluate_risk(snapshot, risk_state, atr_values=atr_values)
         risk_state = risk_result["state"]
         forced_sells = list(risk_result["forced_sells"])
         block_new_buys = bool(risk_result["block_new_buys"])
         reason = "ok"
-        if forced_sells:
+        has_stop = any(fs.get("reason") == "stop_loss" for fs in forced_sells)
+        has_tp = any(fs.get("reason") == "take_profit" for fs in forced_sells)
+        if has_stop and has_tp:
+            reason = "stop_loss+take_profit"
+        elif has_stop:
             reason = "stop_loss"
+        elif has_tp:
+            reason = "take_profit"
         elif block_new_buys:
             reason = "daily_loss_limit"
 
@@ -1156,13 +1292,71 @@ class TradingBot:
             return True
 
     def _assert_runtime_mode_supported(self) -> None:
-        if self.strategy_mode == "live":
+        if self.strategy_mode not in ("disabled", "paper", "live"):
             raise RuntimeError(
-                "runtime.strategy_mode=live is intentionally blocked while the trading runtime is still a skeleton."
+                f"Unsupported runtime.strategy_mode={self.strategy_mode!r}; expected disabled, paper, or live."
             )
+
+    def refresh_sentiment(self) -> None:
+        """Fetch latest sentiment data and cache the deployment multiplier."""
+        if self.sentiment_fetcher is None:
+            return
+        try:
+            snapshot = self.sentiment_fetcher.fetch_fear_and_greed()
+            self.last_sentiment_multiplier = snapshot.deployment_multiplier
+            SIGNALS_LOGGER.info(
+                "Sentiment refreshed fgi=%d classification=%s multiplier=%.2f",
+                snapshot.fgi_value, snapshot.fgi_classification, snapshot.deployment_multiplier,
+            )
+        except Exception:
+            SYSTEM_LOGGER.warning("Sentiment fetch failed; retaining previous multiplier=%.2f", self.last_sentiment_multiplier)
+
+    def _build_price_map(self, state: Mapping[str, Any]) -> dict[str, float]:
+        """Extract a {symbol: last_price} map from the current state/ticker data."""
+        prices: dict[str, float] = {}
+        balance_snapshot = self._unwrap_response_payload(state.get("balance_snapshot", {}))
+        records = self._extract_record_list(
+            balance_snapshot,
+            ("balances", "Balances", "positions", "Positions", "assets", "Assets", "holdings"),
+        )
+        for record in records:
+            pair = _first_present(record, "pair", "Pair", "symbol", "Symbol")
+            price = _coerce_float(_first_present(record, "last_price", "lastPrice", "LastPrice", "price", "Price"))
+            if pair and price and price > 0:
+                prices[str(pair)] = price
+        return prices
+
+    def _build_current_weights(self, state: Mapping[str, Any]) -> dict[str, float]:
+        """Compute current portfolio weights from positions and portfolio value."""
+        portfolio_value = _coerce_float(state.get("portfolio_value"))
+        if not portfolio_value or portfolio_value <= 0:
+            return {}
+        positions = state.get("positions", {})
+        if not isinstance(positions, Mapping):
+            return {}
+        weights: dict[str, float] = {}
+        prices = self._build_price_map(state)
+        for pair, qty in positions.items():
+            amount = _coerce_float(qty)
+            if not amount or amount <= 0:
+                continue
+            price = prices.get(pair, 0.0)
+            if price <= 0:
+                continue
+            weights[pair] = (amount * price) / portfolio_value
+        return weights
+
+    def _get_competition_day(self) -> int:
+        """Return how many days since competition start (1-indexed). 0 = not set."""
+        if self._competition_start_time is None:
+            return 0
+        delta = datetime.now(timezone.utc) - self._competition_start_time
+        return max(int(delta.total_seconds() // 86400) + 1, 1)
 
     def _run_strategy_cycle(self) -> StrategyCycleResult:
         triggered_at = datetime.now(timezone.utc).isoformat()
+        notes: list[str] = []
+
         if self.strategy_mode == "disabled":
             return StrategyCycleResult(
                 mode=self.strategy_mode,
@@ -1170,15 +1364,300 @@ class TradingBot:
                 triggered_at=triggered_at,
                 notes=("Strategy cycle disabled by runtime.strategy_mode.",),
             )
-        if self.strategy_mode == "paper":
+
+        state = self._state_with_defaults(self.load_state())
+        risk_decision = state.get("risk_decision", self._default_risk_decision())
+
+        if state.get("paused"):
+            notes.append("Bot is paused by circuit breaker — skipping strategy cycle.")
             return StrategyCycleResult(
                 mode=self.strategy_mode,
-                status="skeleton_only",
+                status="paused",
                 triggered_at=triggered_at,
-                notes=summarize_strategy_pipeline_gaps(),
+                notes=tuple(notes),
             )
-        raise RuntimeError(
-            f"Unsupported runtime.strategy_mode={self.strategy_mode!r}; expected disabled, paper, or live."
+
+        if risk_decision.get("block_new_buys"):
+            notes.append(f"New buys blocked — reason: {risk_decision.get('reason', 'unknown')}")
+
+        portfolio_value = _coerce_float(state.get("portfolio_value"))
+        if not portfolio_value or portfolio_value <= 0:
+            notes.append("No portfolio value available — cannot run strategy cycle.")
+            return StrategyCycleResult(
+                mode=self.strategy_mode,
+                status="no_portfolio_data",
+                triggered_at=triggered_at,
+                notes=tuple(notes),
+            )
+
+        regime = state.get("regime", "ranging")
+
+        momentum_weights: dict[str, float] = {}
+        mean_reversion_weights: dict[str, float] = {}
+        sector_weights: dict[str, float] = {}
+
+        try:
+            if self.store is not None:
+                candles = self.store.fetch_candles(
+                    pairs=list(self.universe),
+                    since=datetime.now(timezone.utc) - timedelta(days=14),
+                )
+                if candles:
+                    import pandas as pd
+                    df = pd.DataFrame(candles)
+                    if not df.empty and "pair" in df.columns and "close" in df.columns:
+                        closes = df.pivot_table(index="candle_ts", columns="pair", values="close")
+                        volumes = df.pivot_table(index="candle_ts", columns="pair", values="coin_trade_value_24h")
+                        if not closes.empty:
+                            try:
+                                btc_col = next((c for c in closes.columns if "BTC" in c), None)
+                                if btc_col is not None:
+                                    btc_closes = closes[btc_col].dropna()
+                                    min_periods = max(self._ema_fast_period, self._ema_slow_period) + 1
+                                    if len(btc_closes) >= min_periods:
+                                        ema_fast_val = btc_closes.ewm(span=self._ema_fast_period, adjust=False).mean().iloc[-1]
+                                        ema_slow_val = btc_closes.ewm(span=self._ema_slow_period, adjust=False).mean().iloc[-1]
+                                        returns = btc_closes.pct_change().dropna()
+                                        vol = returns.std() if len(returns) > 1 else 0.0
+                                        vol_threshold = returns.std() * self._vol_threshold_mult if len(returns) > 1 else 1.0
+                                        raw_regime = detect_regime(
+                                            ema_fast=ema_fast_val,
+                                            ema_slow=ema_slow_val,
+                                            volatility=vol,
+                                            volatility_threshold=vol_threshold,
+                                            price=btc_closes.iloc[-1],
+                                        )
+                                        if raw_regime == self._regime_streak_value:
+                                            self._regime_streak_count += 1
+                                        else:
+                                            self._regime_streak_value = raw_regime
+                                            self._regime_streak_count = 1
+                                        if self.last_regime == "unknown" or self.last_regime == "ranging":
+                                            regime = raw_regime
+                                        elif raw_regime != self.last_regime and self._regime_streak_count >= self._confirmation_periods:
+                                            regime = raw_regime
+                                        else:
+                                            regime = self.last_regime
+                                        SIGNALS_LOGGER.info(
+                                            "Regime detected: %s (raw=%s streak=%d ema_fast=%.2f ema_slow=%.2f vol=%.4f)",
+                                            regime, raw_regime, self._regime_streak_count, ema_fast_val, ema_slow_val, vol,
+                                        )
+                            except Exception:
+                                SYSTEM_LOGGER.warning("Regime detection failed; using state fallback", exc_info=True)
+                            try:
+                                mom_signals = rank_assets_by_momentum(
+                                    closes, volumes,
+                                    lookback_periods=tuple(int(v) for v in read_config_value(self.config, "momentum", "lookback_periods", default=[3, 5, 7])),
+                                    rsi_threshold=float(read_config_value(self.config, "momentum", "rsi_threshold", default=45)),
+                                    top_n_assets=int(read_config_value(self.config, "momentum", "top_n_assets", default=8)),
+                                )
+                                momentum_weights = {s.symbol: s.normalized_score for s in mom_signals}
+                                SIGNALS_LOGGER.info("Momentum signals generated: %d assets", len(momentum_weights))
+                            except Exception:
+                                SYSTEM_LOGGER.warning("Momentum signal generation failed", exc_info=True)
+
+                            try:
+                                rsi_threshold = float(read_config_value(self.config, "mean_reversion", "rsi_oversold", default=30))
+                                rsi_values: dict[str, float] = {}
+                                for col in closes.columns:
+                                    series = closes[col].dropna()
+                                    if len(series) >= 15:
+                                        rsi = calculate_rsi(series, period=14)
+                                        last_rsi = rsi.dropna()
+                                        if not last_rsi.empty:
+                                            rsi_values[col] = float(last_rsi.iloc[-1])
+                                oversold_symbols = find_oversold_assets(rsi_values, threshold=rsi_threshold)
+                                mean_reversion_weights = {s: 0.5 for s in oversold_symbols}
+                                SIGNALS_LOGGER.info("Mean-reversion signals: %d assets (RSI <= %.0f)", len(mean_reversion_weights), rsi_threshold)
+                            except Exception:
+                                SYSTEM_LOGGER.warning("Mean-reversion signal generation failed", exc_info=True)
+
+            try:
+                btc_dominance = _coerce_float(state.get("btc_dominance")) or 58.0
+                previous_dominance = _coerce_float(state.get("previous_btc_dominance")) or 57.5
+
+                btc_price_direction = "flat"
+                if "BTCUSDT" in closes.columns and len(closes) >= 2:
+                    btc_last = float(closes["BTCUSDT"].dropna().iloc[-1])
+                    btc_prev = float(closes["BTCUSDT"].dropna().iloc[-2])
+                    if btc_prev > 0:
+                        btc_pct_change = (btc_last - btc_prev) / btc_prev
+                        if btc_pct_change > 0.001:
+                            btc_price_direction = "rising"
+                        elif btc_pct_change < -0.001:
+                            btc_price_direction = "falling"
+
+                sector_weights = sector_rotation_weights(
+                    universe=list(self.universe),
+                    btc_dominance=btc_dominance,
+                    previous_dominance=previous_dominance,
+                    btc_price_direction=btc_price_direction,
+                )
+                SIGNALS_LOGGER.info(
+                    "Sector weights generated for %d assets (btc_price_dir=%s)",
+                    len(sector_weights), btc_price_direction,
+                )
+            except Exception:
+                SYSTEM_LOGGER.warning("Sector rotation failed", exc_info=True)
+
+        except Exception:
+            SYSTEM_LOGGER.warning("Signal generation failed", exc_info=True)
+            notes.append("Signal generation encountered errors.")
+
+        self.last_regime = regime
+        ensemble_result = ensemble_combine(
+            regime,
+            momentum_weights=momentum_weights or None,
+            mean_reversion_weights=mean_reversion_weights or None,
+            sector_rotation_weights=sector_weights or None,
+            sentiment_multiplier=self.last_sentiment_multiplier,
+        )
+        SIGNALS_LOGGER.info(
+            "Ensemble combined regime=%s target_assets=%d cash_allocation=%.2f",
+            ensemble_result.regime, len(ensemble_result.target_weights), ensemble_result.cash_allocation,
+        )
+
+        funding_bonus_threshold = float(
+            read_config_value(self.config, "sentiment", "funding_rate_bonus_threshold", default=-0.0001)
+        )
+        funding_bonus_pct = float(
+            read_config_value(self.config, "sentiment", "funding_rate_bonus_pct", default=0.02)
+        )
+        combined_weights = dict(ensemble_result.target_weights)
+        if self.sentiment_fetcher is not None:
+            try:
+                funding_rates = self.sentiment_fetcher.fetch_funding_rates(list(self.universe))
+                for sym, rate in funding_rates.items():
+                    if rate < funding_bonus_threshold:
+                        combined_weights[sym] = combined_weights.get(sym, 0.0) + funding_bonus_pct
+                        SIGNALS_LOGGER.info("Funding rate bonus: %s rate=%.6f bonus=+%.2f%%", sym, rate, funding_bonus_pct * 100)
+            except Exception:
+                SYSTEM_LOGGER.warning("Funding rate bonus application failed", exc_info=True)
+
+        volatilities: dict[str, float] | None = None
+        try:
+            if self.store is not None:
+                candles = self.store.fetch_candles(
+                    pairs=list(self.universe),
+                    since=datetime.now(timezone.utc) - timedelta(days=14),
+                )
+                if candles:
+                    import pandas as pd
+                    vdf = pd.DataFrame(candles)
+                    if not vdf.empty and "pair" in vdf.columns and "close" in vdf.columns:
+                        vcloses = vdf.pivot_table(index="candle_ts", columns="pair", values="close")
+                        if not vcloses.empty and len(vcloses) > 2:
+                            vols = vcloses.pct_change().std()
+                            volatilities = {str(s): float(v) for s, v in vols.items() if v > 0 and not pd.isna(v)}
+        except Exception:
+            SYSTEM_LOGGER.warning("Volatility computation for inverse-vol failed", exc_info=True)
+
+        competition_day = self._get_competition_day()
+        day1_max_deploy = float(read_config_value(self.config, "runtime", "day1_max_deploy", default=0.30))
+        day2_max_deploy = float(read_config_value(self.config, "runtime", "day2_max_deploy", default=0.60))
+        day1_stop_loss = float(read_config_value(self.config, "runtime", "day1_stop_loss_pct", default=0.02))
+        deploy_cap: float | None = None
+
+        if competition_day == 1:
+            deploy_cap = day1_max_deploy
+            btc_eth_only = {"BTCUSDT", "ETHUSDT", "BTCUSD", "ETHUSD"}
+            combined_weights = {s: w for s, w in combined_weights.items() if s.upper() in btc_eth_only}
+            if self.risk_manager is not None:
+                self.risk_manager.stop_loss_pct = day1_stop_loss
+            SIGNALS_LOGGER.info("Day 1 protocol: BTC/ETH only, cap=%.0f%%, stop=%.1f%%", deploy_cap * 100, day1_stop_loss * 100)
+        elif competition_day == 2:
+            deploy_cap = day2_max_deploy
+            if self.risk_manager is not None:
+                self.risk_manager.stop_loss_pct = float(read_config_value(self.config, "risk", "stop_loss_pct", default=0.03))
+            SIGNALS_LOGGER.info("Day 2 protocol: full universe, cap=%.0f%%", deploy_cap * 100)
+        elif competition_day >= 3:
+            if self.risk_manager is not None:
+                self.risk_manager.stop_loss_pct = float(read_config_value(self.config, "risk", "stop_loss_pct", default=0.03))
+
+        if self.portfolio_optimizer is not None:
+            target_weights = self.portfolio_optimizer.optimize(
+                combined_weights,
+                volatilities=volatilities,
+                regime=regime,
+            )
+        else:
+            target_weights = dict(combined_weights)
+
+        if deploy_cap is not None:
+            total_deployed = sum(target_weights.values())
+            if total_deployed > deploy_cap and total_deployed > 0:
+                scale = deploy_cap / total_deployed
+                target_weights = {s: w * scale for s, w in target_weights.items()}
+
+        current_weights = self._build_current_weights(state)
+        prices = self._build_price_map(state)
+
+        orders = generate_rebalance_orders(
+            current_weights,
+            target_weights,
+            portfolio_value=portfolio_value,
+            prices=prices,
+            exchange_info=self._market_definitions or None,
+            limit_offset_pct=float(read_config_value(self.config, "execution", "limit_offset_pct", default=0.0001)),
+            min_rebalance_drift=self.min_rebalance_drift,
+            prefer_limit=bool(read_config_value(self.config, "execution", "prefer_limit_orders", default=True)),
+        )
+
+        proposed = tuple(
+            {"side": o.side, "symbol": o.symbol, "qty": o.quantity, "price": o.price, "type": o.order_type}
+            for o in orders
+        )
+
+        if self.strategy_mode == "paper":
+            if risk_decision.get("block_new_buys"):
+                buy_orders = [o for o in orders if o.side == "BUY"]
+                sell_orders = [o for o in orders if o.side == "SELL"]
+                if sell_orders:
+                    execute_orders(sell_orders, self.client, spacing_seconds=0, dry_run=True)
+                if buy_orders:
+                    notes.append(f"Paper mode: blocked {len(buy_orders)} BUY orders — risk gating active.")
+                notes.append(f"Paper mode: {len(sell_orders)} SELL orders logged (dry run).")
+            else:
+                if orders:
+                    execute_orders(orders, self.client, spacing_seconds=0, dry_run=True)
+                    notes.append(f"Paper mode: {len(orders)} orders logged (dry run).")
+                else:
+                    notes.append("Paper mode: no rebalancing needed (within drift tolerance).")
+            return StrategyCycleResult(
+                mode=self.strategy_mode,
+                status="paper_executed",
+                triggered_at=triggered_at,
+                target_weights=target_weights,
+                proposed_orders=proposed,
+                notes=tuple(notes),
+            )
+
+        if self.strategy_mode == "live":
+            if risk_decision.get("block_new_buys"):
+                buy_orders = [o for o in orders if o.side == "BUY"]
+                sell_orders = [o for o in orders if o.side == "SELL"]
+                if sell_orders:
+                    execute_orders(sell_orders, self.client, spacing_seconds=self.order_spacing_seconds, dry_run=False)
+                if buy_orders:
+                    notes.append(f"Blocked {len(buy_orders)} BUY orders — risk gating active.")
+            else:
+                if orders:
+                    execute_orders(orders, self.client, spacing_seconds=self.order_spacing_seconds, dry_run=False)
+            notes.append(f"Live: {len(orders)} orders processed.")
+            return StrategyCycleResult(
+                mode=self.strategy_mode,
+                status="live_executed",
+                triggered_at=triggered_at,
+                target_weights=target_weights,
+                proposed_orders=proposed,
+                notes=tuple(notes),
+            )
+
+        return StrategyCycleResult(
+            mode=self.strategy_mode,
+            status="unknown_mode",
+            triggered_at=triggered_at,
+            notes=(f"Unexpected strategy_mode={self.strategy_mode!r}",),
         )
 
     def _state_with_defaults(self, state: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1241,6 +1720,10 @@ class TradingBot:
             if direct_value is not None:
                 return direct_value
 
+            wallet_value = self._sum_wallet_balances(data)
+            if wallet_value is not None:
+                return wallet_value
+
             total_value = 0.0
             found_values = False
             for record in self._extract_record_list(
@@ -1269,9 +1752,36 @@ class TradingBot:
 
         return _coerce_float(data)
 
+    @staticmethod
+    def _sum_wallet_balances(data: Mapping[str, Any]) -> float | None:
+        """Sum Free+Lock values across SpotWallet/MarginWallet (Roostoo format).
+
+        Roostoo returns ``{"SpotWallet": {"USD": {"Free": 50000, "Lock": 0}}, ...}``.
+        """
+        total = 0.0
+        found = False
+        for wallet_key in ("SpotWallet", "MarginWallet"):
+            wallet = data.get(wallet_key)
+            if not isinstance(wallet, Mapping):
+                continue
+            for _asset, holdings in wallet.items():
+                if not isinstance(holdings, Mapping):
+                    continue
+                free = _coerce_float(holdings.get("Free")) or 0.0
+                lock = _coerce_float(holdings.get("Lock")) or 0.0
+                total += free + lock
+                found = True
+        return total if found else None
+
     def _extract_positions(self, payload: Any) -> dict[str, float]:
         data = self._unwrap_response_payload(payload)
         positions: dict[str, float] = {}
+
+        if isinstance(data, Mapping):
+            wallet_positions = self._extract_wallet_positions(data)
+            if wallet_positions:
+                return wallet_positions
+
         records = self._extract_record_list(
             data,
             ("balances", "Balances", "positions", "Positions", "assets", "Assets", "holdings"),
@@ -1336,6 +1846,24 @@ class TradingBot:
             )
             if symbol and quantity not in (None, 0.0):
                 positions[str(symbol)] = float(quantity)
+        return positions
+
+    @staticmethod
+    def _extract_wallet_positions(data: Mapping[str, Any]) -> dict[str, float]:
+        """Extract per-asset holdings from Roostoo SpotWallet/MarginWallet format."""
+        positions: dict[str, float] = {}
+        for wallet_key in ("SpotWallet", "MarginWallet"):
+            wallet = data.get(wallet_key)
+            if not isinstance(wallet, Mapping):
+                continue
+            for asset, holdings in wallet.items():
+                if not isinstance(holdings, Mapping):
+                    continue
+                free = _coerce_float(holdings.get("Free")) or 0.0
+                lock = _coerce_float(holdings.get("Lock")) or 0.0
+                total = free + lock
+                if total > 0:
+                    positions[str(asset)] = total
         return positions
 
     def _extract_pending_orders(self, payload: Any) -> list[dict[str, Any]]:

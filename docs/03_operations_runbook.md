@@ -30,12 +30,19 @@ What works today:
 - startup reconciliation against signed balance and pending-order endpoints
 - Telegram startup and heartbeat delivery when `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are configured
 - deploy scripts and systemd unit for `/opt/trading-bot`
+- all 4 signal modules (momentum, mean-reversion, pairs rotation, sector rotation)
+- ensemble combiner with regime-dependent weight blending and sentiment multiplier
+- sentiment fetcher (Fear & Greed Index from Alternative.me with deployment multiplier)
+- portfolio optimizer with inverse-vol weighting, Kelly cap, sector limits, regime cash floors
+- order executor with weight-to-quantity conversion, limit order pricing, precision enforcement, sell-first ordering
+- metrics tracker with running Sharpe, Sortino, and Calmar ratio computation
+- full strategy cycle wired in `_run_strategy_cycle` for disabled, paper, and live modes
+- risk manager and circuit breaker integrated into the strategy cycle
 
 What is still on the path to the end product:
 
-- full strategy orchestration in the runtime loop
-- live order placement and cancel/query flows wired into execution modules
-- sentiment refresh jobs
+- backtest notebook with real historical data (`notebooks/backtest_results.ipynb`)
+- live-environment endpoint integration testing against competition credentials
 
 ## Required Verification
 
@@ -62,7 +69,7 @@ python -m bot.main --poll-once
 
 On an EC2 host that is already running `tradingbot.service`, stop the service before running `python -m bot.main --poll-once` manually to avoid concurrent sqlite and state-file writes.
 
-Keep `runtime.strategy_mode` at `disabled` or `paper` while the project is still in skeleton phase. `live` is intentionally blocked in code until signal generation, weighting, risk gating, rebalance planning, and execution are wired end to end.
+All pipeline stages (signal generation, ensemble weighting, risk gating, rebalance planning, and order execution) are now wired end to end. Set `runtime.strategy_mode` to `paper` for dry-run logging, or `live` for real order placement. Keep it at `disabled` during development to suppress the strategy cycle.
 
 For pre-competition calibration and the first-three-module validation pass:
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+from typing import Sequence
 
 
 def classify_btc_dominance(
@@ -37,7 +37,7 @@ _ETH_SYMBOLS = frozenset({"ETHUSDT", "ETHUSD"})
 _LARGE_ALT_PREFIXES = ("SOL", "BNB", "XRP", "ADA", "AVAX", "DOT", "MATIC", "LINK", "DOGE")
 
 
-def _classify_symbol(symbol: str) -> str:
+def classify_symbol(symbol: str) -> str:
     """Classify a symbol into btc, eth, large_alt, or small_alt."""
     upper = symbol.upper()
     if upper in _BTC_SYMBOLS:
@@ -55,14 +55,26 @@ def compute_sector_allocation(
     previous_dominance: float,
     *,
     min_change: float = 0.5,
+    btc_price_direction: str = "flat",
 ) -> SectorAllocation:
-    """Compute target sector weights based on BTC dominance regime.
+    """Compute target sector weights based on BTC dominance regime and price direction.
 
-    - bitcoin_led (dominance rising): heavy BTC + ETH, light alts
-    - altcoin_rotation (dominance falling): light BTC, heavy alts
-    - neutral: balanced allocation
+    Cross-checks dominance trend with BTC price direction per strategy doc 3.4:
+    - dominance rising + price rising  → bitcoin_led (BTC/ETH heavy)
+    - dominance falling + price rising → altcoin_rotation (alt heavy)
+    - dominance rising + price falling → defensive (80%+ cash implied)
+    - neutral dominance               → balanced allocation
     """
     regime = classify_btc_dominance(btc_dominance, previous_dominance, min_change)
+
+    if regime == "bitcoin_led" and btc_price_direction == "falling":
+        return SectorAllocation(
+            btc_weight=0.10,
+            eth_weight=0.05,
+            large_alt_weight=0.03,
+            small_alt_weight=0.02,
+            rotation_regime="defensive",
+        )
 
     if regime == "bitcoin_led":
         return SectorAllocation(
@@ -96,18 +108,21 @@ def sector_rotation_weights(
     previous_dominance: float,
     *,
     min_change: float = 0.5,
+    btc_price_direction: str = "flat",
 ) -> dict[str, float]:
     """Produce per-asset weight suggestions based on sector rotation.
 
     Distributes the sector-level weight equally among assets in each bucket.
     """
     allocation = compute_sector_allocation(
-        btc_dominance, previous_dominance, min_change=min_change
+        btc_dominance, previous_dominance,
+        min_change=min_change,
+        btc_price_direction=btc_price_direction,
     )
 
     buckets: dict[str, list[str]] = {"btc": [], "eth": [], "large_alt": [], "small_alt": []}
     for symbol in universe:
-        bucket = _classify_symbol(symbol)
+        bucket = classify_symbol(symbol)
         buckets[bucket].append(symbol)
 
     weight_map: dict[str, float] = {

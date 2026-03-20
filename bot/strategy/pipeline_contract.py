@@ -1,4 +1,4 @@
-"""Current strategy runtime contract for the project skeleton."""
+"""Strategy runtime contract — pipeline stage readiness checks."""
 
 from __future__ import annotations
 
@@ -44,13 +44,13 @@ def current_strategy_pipeline() -> tuple[StrategyPipelineStage, ...]:
         ),
         StrategyPipelineStage(
             name="rebalance_planning",
-            implemented=False,
-            summary="Runtime target-weight to order-planning flow is not wired yet.",
+            implemented=True,
+            summary="Weight-to-order conversion with precision, drift filtering, and sell-first ordering is wired.",
         ),
         StrategyPipelineStage(
             name="live_execution",
-            implemented=False,
-            summary="Production order submission remains intentionally disabled.",
+            implemented=True,
+            summary="Order placement via API with inter-order spacing and trade logging is implemented.",
         ),
     )
 

@@ -14,6 +14,7 @@ from .pairs_rotation import pairs_rotation_weights
 from .pairs_rotation import rank_pairs_by_spread
 from .sector_rotation import SectorAllocation
 from .sector_rotation import classify_btc_dominance
+from .sector_rotation import classify_symbol
 from .sector_rotation import compute_sector_allocation
 from .sector_rotation import sector_rotation_weights
 
@@ -26,6 +27,7 @@ __all__ = [
     "calculate_momentum_scores",
     "calculate_rsi",
     "classify_btc_dominance",
+    "classify_symbol",
     "compute_sector_allocation",
     "evaluate_mean_reversion_signal",
     "find_cointegrated_pairs",

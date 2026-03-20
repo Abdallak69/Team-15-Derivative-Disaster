@@ -60,19 +60,74 @@ def _estimate_half_life(spread: pd.Series) -> float:
     return float(-np.log(2) / slope)
 
 
+_MACKINNON_CV_C: list[tuple[int, float, float, float]] = [
+    (25, -3.75, -3.00, -2.63),
+    (50, -3.58, -2.93, -2.60),
+    (100, -3.50, -2.89, -2.58),
+    (250, -3.46, -2.87, -2.57),
+    (500, -3.44, -2.86, -2.57),
+    (10_000, -3.43, -2.86, -2.57),
+]
+
+
+def _interpolate_critical_value(n: int, level_idx: int) -> float:
+    """Linearly interpolate MacKinnon critical values for the 'c' model."""
+    table = _MACKINNON_CV_C
+    if n <= table[0][0]:
+        return table[0][level_idx + 1]
+    if n >= table[-1][0]:
+        return table[-1][level_idx + 1]
+    for k in range(len(table) - 1):
+        n_lo, n_hi = table[k][0], table[k + 1][0]
+        if n_lo <= n <= n_hi:
+            frac = (n - n_lo) / (n_hi - n_lo)
+            return table[k][level_idx + 1] * (1 - frac) + table[k + 1][level_idx + 1] * frac
+    return table[-1][level_idx + 1]
+
+
 def _adf_test_pvalue(spread: pd.Series) -> float:
-    """Run an Augmented Dickey-Fuller style unit root test (simple ADF via OLS)."""
+    """Augmented Dickey-Fuller unit root test using MacKinnon critical values.
+
+    Computes the ADF t-statistic via OLS on delta(y) = phi * y_{t-1} + eps,
+    then maps to an approximate p-value using the Dickey-Fuller distribution
+    critical value table (constant, no trend).
+    """
     spread_clean = spread.dropna()
-    if len(spread_clean) < 10:
+    n = len(spread_clean)
+    if n < 10:
         return 1.0
     lagged = spread_clean.shift(1).iloc[1:]
     delta = spread_clean.diff().iloc[1:]
-    if lagged.std() == 0.0:
+    lagged_std = float(lagged.std())
+    if lagged_std == 0.0:
         return 1.0
-    slope, intercept, _, p_value, _ = stats.linregress(
+    slope, _, _, _, _ = stats.linregress(
         lagged.values.astype(float), delta.values.astype(float)
     )
-    return float(p_value)
+    residuals = delta.values.astype(float) - (
+        slope * lagged.values.astype(float)
+        + float(np.mean(delta.values.astype(float) - slope * lagged.values.astype(float)))
+    )
+    se_slope = float(np.sqrt(np.sum(residuals ** 2) / max(n - 3, 1))) / (
+        lagged_std * np.sqrt(max(n - 2, 1))
+    )
+    if se_slope == 0.0:
+        return 1.0
+    adf_stat = slope / se_slope
+
+    cv_01 = _interpolate_critical_value(n, 0)
+    cv_05 = _interpolate_critical_value(n, 1)
+    cv_10 = _interpolate_critical_value(n, 2)
+
+    if adf_stat <= cv_01:
+        return 0.005
+    if adf_stat <= cv_05:
+        frac = (adf_stat - cv_01) / (cv_05 - cv_01) if cv_05 != cv_01 else 0.5
+        return 0.01 + frac * 0.04
+    if adf_stat <= cv_10:
+        frac = (adf_stat - cv_05) / (cv_10 - cv_05) if cv_10 != cv_05 else 0.5
+        return 0.05 + frac * 0.05
+    return min(1.0, 0.10 + (adf_stat - cv_10) * 0.15)
 
 
 def find_cointegrated_pairs(

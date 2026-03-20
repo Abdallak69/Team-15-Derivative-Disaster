@@ -79,7 +79,9 @@ def check_position_stop_losses(
     state: dict[str, Any],
     *,
     stop_loss_pct: float = 0.03,
+    atr_values: Mapping[str, float] | None = None,
 ) -> list[dict[str, Any]]:
+    """Trigger stop-loss using the tighter of flat pct or 2 * ATR pct."""
     forced_sells = []
     pending_exit_pairs = state["pending_exit_pairs"]
 
@@ -95,9 +97,14 @@ def check_position_stop_losses(
         if entry_price is None or entry_price <= 0 or last_price is None:
             continue
 
+        effective_stop = stop_loss_pct
+        if atr_values and pair in atr_values and last_price > 0:
+            atr_pct = atr_values[pair] / last_price
+            effective_stop = min(stop_loss_pct, 2.0 * atr_pct)
+
         pnl_pct = (last_price - entry_price) / entry_price
 
-        if pnl_pct <= -stop_loss_pct:
+        if pnl_pct <= -effective_stop:
             quantity = _coerce_float(position.get("quantity")) or 0.0
             forced_sells.append(
                 {
@@ -105,10 +112,54 @@ def check_position_stop_losses(
                     "action": "SELL_FULL",
                     "quantity": quantity,
                     "reason": "stop_loss",
+                    "effective_stop_pct": effective_stop,
                 }
             )
             pending_exit_pairs.append(pair)
 
+    return forced_sells
+
+
+def check_position_take_profits(
+    snapshot: Mapping[str, Any],
+    state: dict[str, Any],
+    *,
+    take_profit_pct: float = 0.08,
+) -> list[dict[str, Any]]:
+    """Sell half when unrealized gain reaches +take_profit_pct (default +8%)."""
+    forced_sells = []
+    pending_exit_pairs = state["pending_exit_pairs"]
+    already_taken_profit: list[str] = list(state.get("taken_profit_pairs", []))
+
+    for position in snapshot["positions"]:
+        pair = str(position["pair"])
+
+        if pair in pending_exit_pairs or pair in already_taken_profit:
+            continue
+
+        entry_price = _coerce_float(position.get("entry_price"))
+        last_price = _coerce_float(position.get("last_price"))
+        quantity = _coerce_float(position.get("quantity")) or 0.0
+
+        if entry_price is None or entry_price <= 0 or last_price is None or quantity <= 0:
+            continue
+
+        pnl_pct = (last_price - entry_price) / entry_price
+
+        if pnl_pct >= take_profit_pct:
+            sell_qty = quantity * 0.5
+            forced_sells.append(
+                {
+                    "pair": pair,
+                    "action": "SELL_HALF",
+                    "quantity": sell_qty,
+                    "reason": "take_profit",
+                    "unrealized_pnl_pct": pnl_pct,
+                }
+            )
+            already_taken_profit.append(pair)
+
+    state["taken_profit_pairs"] = already_taken_profit
     return forced_sells
 
 
@@ -182,6 +233,8 @@ def evaluate_risk(
     *,
     stop_loss_pct: float = 0.03,
     daily_loss_limit: float = 0.02,
+    take_profit_pct: float = 0.08,
+    atr_values: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
     rollover_day_if_needed(snapshot, state)
     refresh_pending_exit_pairs(snapshot, state)
@@ -189,7 +242,14 @@ def evaluate_risk(
         snapshot,
         state,
         stop_loss_pct=stop_loss_pct,
+        atr_values=atr_values,
     )
+    profit_sells = check_position_take_profits(
+        snapshot,
+        state,
+        take_profit_pct=take_profit_pct,
+    )
+    forced_sells.extend(profit_sells)
     block_new_buys = check_daily_loss(
         snapshot,
         state,
@@ -240,23 +300,40 @@ class RiskManager:
     max_position_pct: float = 0.10
     stop_loss_pct: float = 0.03
     daily_loss_limit: float = 0.02
+    take_profit_pct: float = 0.08
 
     def apply_position_limits(self, weights: Mapping[str, float]) -> dict[str, float]:
         """Enforce the configured maximum allocation per symbol."""
         return enforce_position_limit(weights, self.max_position_pct)
 
     def make_initial_state(self, snapshot: Mapping[str, Any]) -> dict[str, Any]:
-        return make_initial_state(snapshot)
+        state = make_initial_state(snapshot)
+        state["taken_profit_pairs"] = []
+        return state
 
     def check_position_stop_losses(
         self,
         snapshot: Mapping[str, Any],
         state: dict[str, Any],
+        *,
+        atr_values: Mapping[str, float] | None = None,
     ) -> list[dict[str, Any]]:
         return check_position_stop_losses(
             snapshot,
             state,
             stop_loss_pct=self.stop_loss_pct,
+            atr_values=atr_values,
+        )
+
+    def check_position_take_profits(
+        self,
+        snapshot: Mapping[str, Any],
+        state: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        return check_position_take_profits(
+            snapshot,
+            state,
+            take_profit_pct=self.take_profit_pct,
         )
 
     def check_daily_loss(self, snapshot: Mapping[str, Any], state: dict[str, Any]) -> bool:
@@ -286,10 +363,18 @@ class RiskManager:
     ) -> None:
         refresh_pending_exit_pairs(snapshot, state)
 
-    def evaluate_risk(self, snapshot: Mapping[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    def evaluate_risk(
+        self,
+        snapshot: Mapping[str, Any],
+        state: dict[str, Any],
+        *,
+        atr_values: Mapping[str, float] | None = None,
+    ) -> dict[str, Any]:
         return evaluate_risk(
             snapshot,
             state,
             stop_loss_pct=self.stop_loss_pct,
             daily_loss_limit=self.daily_loss_limit,
+            take_profit_pct=self.take_profit_pct,
+            atr_values=atr_values,
         )

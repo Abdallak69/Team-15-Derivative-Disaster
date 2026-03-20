@@ -43,6 +43,21 @@ class TransientRequestError(RuntimeError):
     """Raised for retryable transport or server-side failures."""
 
 
+def _normalize_payload(raw: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Stringify booleans so the form body matches the signed payload exactly."""
+    if not raw:
+        return {}
+    out: dict[str, Any] = {}
+    for key, value in raw.items():
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            out[key] = str(value).lower()
+        else:
+            out[key] = value
+    return out
+
+
 @dataclass(slots=True)
 class RoostooClient:
     """HTTP client for Roostoo market-data endpoints."""
@@ -84,12 +99,13 @@ class RoostooClient:
         signed: bool = False,
     ) -> Any:
         request_params = dict(params or {})
+        request_data = _normalize_payload(data)
         headers: dict[str, str] = {}
 
         if signed:
             if self.credentials is None:
                 raise ApiError("Signed endpoint requested without API credentials.")
-            headers.update(build_auth_headers(self.credentials, request_params | dict(data or {})))
+            headers.update(build_auth_headers(self.credentials, request_params | request_data))
 
         if method.upper() == "POST":
             headers["Content-Type"] = "application/x-www-form-urlencoded"
@@ -98,7 +114,7 @@ class RoostooClient:
             method=method.upper(),
             url=self.endpoint_url(endpoint_name),
             params=request_params or None,
-            data=dict(data or {}) or None,
+            data=request_data or None,
             headers=headers or None,
             timeout=self.timeout_seconds,
         )
@@ -116,7 +132,14 @@ class RoostooClient:
             raise ApiError(f"Invalid JSON response from {endpoint_name}") from exc
 
         if isinstance(payload, dict) and payload.get("Success") is False:
-            message = payload.get("Message") or payload.get("message") or "Unknown API error"
+            message = (
+                payload.get("ErrMsg")
+                or payload.get("Message")
+                or payload.get("message")
+                or "Unknown API error"
+            )
+            if message.lower() in ("no order matched",):
+                return payload
             raise ApiError(message)
 
         return payload

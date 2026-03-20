@@ -23,18 +23,19 @@ class MomentumTests(unittest.TestCase):
         self.assertAlmostEqual(scores["BTCUSD"], 0.10)
 
     def test_rank_assets_by_momentum_applies_filters_and_orders_scores(self) -> None:
+        n = 40
         closes = pd.DataFrame(
             {
-                "BTCUSDT": [100, 102, 104, 106, 108, 110, 112, 114, 116, 118, 120, 122, 124, 126, 128],
-                "ETHUSDT": [100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114],
-                "SOLUSDT": [120, 118, 116, 114, 112, 110, 108, 106, 104, 102, 100, 98, 96, 94, 92],
+                "BTCUSDT": [100 + i * 2 for i in range(n)],
+                "ETHUSDT": [100 + i * 0.5 for i in range(n)],
+                "SOLUSDT": [120 - i * 0.7 for i in range(n)],
             }
         )
         volumes = pd.DataFrame(
             {
-                "BTCUSDT": [20_000_000.0] * len(closes),
-                "ETHUSDT": [9_000_000.0] * len(closes),
-                "SOLUSDT": [20_000_000.0] * len(closes),
+                "BTCUSDT": [20_000_000.0] * n,
+                "ETHUSDT": [9_000_000.0] * n,
+                "SOLUSDT": [20_000_000.0] * n,
             }
         )
 

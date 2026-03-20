@@ -177,33 +177,52 @@ class OhlcvStore:
                 )
         return len(snapshot_batch)
 
-    def fetch_candles(self, pair: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
-        """Return recently stored candles, optionally filtered by pair."""
-        self.initialize()
-        query = """
-            SELECT
-                pair,
-                candle_ts,
-                open,
-                high,
-                low,
-                close,
-                max_bid,
-                min_ask,
-                change_pct,
-                coin_trade_value_24h,
-                unit_trade_value_24h,
-                sample_count,
-                first_polled_at,
-                last_polled_at
-            FROM ohlcv_1m
+    def fetch_candles(
+        self,
+        pair: str | None = None,
+        *,
+        pairs: Iterable[str] | None = None,
+        since: datetime | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return stored candles filtered by pair(s), time window, and/or row limit.
+
+        Parameters
+        ----------
+        pair : single pair string (e.g. ``"BTC/USD"``)
+        pairs : iterable of pair strings — takes precedence over *pair*
+        since : only return candles at or after this timestamp
+        limit : max rows to return (default unlimited when *since* is set,
+                otherwise 100)
         """
+        self.initialize()
+
+        _COLUMNS = (
+            "pair, candle_ts, open, high, low, close, max_bid, min_ask, "
+            "change_pct, coin_trade_value_24h, unit_trade_value_24h, "
+            "sample_count, first_polled_at, last_polled_at"
+        )
+        clauses: list[str] = []
         params: list[Any] = []
-        if pair:
-            query += " WHERE pair = ?"
-            params.append(pair)
-        query += " ORDER BY candle_ts DESC LIMIT ?"
-        params.append(limit)
+
+        pair_list = list(pairs) if pairs else ([pair] if pair else [])
+        if pair_list:
+            placeholders = ", ".join("?" for _ in pair_list)
+            clauses.append(f"pair IN ({placeholders})")
+            params.extend(pair_list)
+
+        if since is not None:
+            ts = since.astimezone(timezone.utc).isoformat()
+            clauses.append("candle_ts >= ?")
+            params.append(ts)
+
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        row_limit = limit if limit is not None else (None if since else 100)
+
+        query = f"SELECT {_COLUMNS} FROM ohlcv_1m{where} ORDER BY candle_ts ASC"
+        if row_limit is not None:
+            query += " LIMIT ?"
+            params.append(row_limit)
 
         with sqlite3.connect(self.db_path) as connection:
             connection.row_factory = sqlite3.Row

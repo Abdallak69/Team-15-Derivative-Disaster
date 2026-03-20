@@ -53,7 +53,11 @@ class UniverseBuilder:
             symbol = _first_present(item, "Pair", "pair", "symbol", "Symbol")
             if not symbol:
                 continue
-            status = str(_first_present(item, "Status", "status") or "TRADING")
+            can_trade = _first_present(item, "CanTrade", "canTrade")
+            if can_trade is not None:
+                status = "TRADING" if can_trade else "BREAK"
+            else:
+                status = str(_first_present(item, "Status", "status") or "TRADING")
             markets[str(symbol)] = MarketDefinition(
                 symbol=str(symbol),
                 status=status,
@@ -91,14 +95,42 @@ class UniverseBuilder:
                 if key in exchange_info:
                     return UniverseBuilder._normalize_records(exchange_info[key])
 
-            records: list[dict[str, Any]] = []
-            for symbol, value in exchange_info.items():
-                if not isinstance(value, Mapping):
-                    continue
-                record = dict(value)
-                if not any(field in record for field in ("Pair", "pair", "symbol", "Symbol")):
-                    record["symbol"] = symbol
-                records.append(record)
-            return records or [dict(exchange_info)]
+            return UniverseBuilder._expand_nested_pairs(exchange_info)
 
-        return [dict(item) for item in exchange_info if isinstance(item, Mapping)]
+        records: list[dict[str, Any]] = []
+        for item in exchange_info:
+            if not isinstance(item, Mapping):
+                continue
+            expanded = UniverseBuilder._expand_nested_pairs(item)
+            records.extend(expanded)
+        return records
+
+    @staticmethod
+    def _expand_nested_pairs(mapping: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """Expand a mapping that may contain nested pair dicts into flat records.
+
+        Handles the Roostoo format where exchange info nests pair definitions
+        as ``{"BTC/USD": {"Coin": "BTC", ...}, "ETH/USD": {...}, ...}``.
+        """
+        nested: list[dict[str, Any]] = []
+        for key, value in mapping.items():
+            if not isinstance(value, Mapping):
+                continue
+            if "CanTrade" in value or "canTrade" in value:
+                record = dict(value)
+                if not any(f in record for f in ("Pair", "pair", "symbol", "Symbol")):
+                    record["symbol"] = key
+                nested.append(record)
+
+        if nested:
+            return nested
+
+        records: list[dict[str, Any]] = []
+        for key, value in mapping.items():
+            if not isinstance(value, Mapping):
+                continue
+            record = dict(value)
+            if not any(f in record for f in ("Pair", "pair", "symbol", "Symbol")):
+                record["symbol"] = key
+            records.append(record)
+        return records or [dict(mapping)]

@@ -112,13 +112,6 @@ class BinanceFetcher:
     timeout_seconds: float = 10.0
     session: requests.Session | Any = field(default_factory=requests.Session)
 
-    def klines_url(self, symbol: str, interval: str = "1h") -> str:
-        """Return the public kline endpoint for a symbol and interval."""
-        return (
-            f"{self.base_url.rstrip('/')}/api/v3/klines"
-            f"?symbol={normalize_binance_symbol(symbol)}&interval={interval}"
-        )
-
     @staticmethod
     def interval_to_milliseconds(interval: str) -> int:
         """Return the candle width for a supported Binance interval."""

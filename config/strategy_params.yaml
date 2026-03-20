@@ -8,7 +8,12 @@ runtime:
   trading_cycle_interval_seconds: 300
   heartbeat_interval_seconds: 3600
   clock_sync_interval_seconds: 3600
-  strategy_mode: disabled
+  sentiment_refresh_interval_seconds: 14400
+  strategy_mode: paper
+  competition_start: null
+  day1_max_deploy: 0.30
+  day1_stop_loss_pct: 0.02
+  day2_max_deploy: 0.60
 
 regime:
   ema_fast_period: 20
@@ -18,11 +23,8 @@ regime:
   confirmation_periods: 2
 
 momentum:
-  lookback_days: [3, 5, 7]
+  lookback_periods: [3, 5, 7]
   rsi_threshold: 45
-  macd_fast: 12
-  macd_slow: 26
-  macd_signal: 9
   top_n_assets: 8
 
 mean_reversion:
@@ -30,6 +32,7 @@ mean_reversion:
   bollinger_period: 20
   bollinger_std: 2.0
   min_volume_usd: 10000000
+  # Reserved for future use:
   max_hold_days: 3
   stop_loss_pct: 0.05
 
@@ -42,6 +45,31 @@ risk:
   circuit_breaker_l1: 0.03
   circuit_breaker_l2: 0.05
   daily_loss_limit: 0.02
+
+# Not yet wired into the strategy cycle — config reserved for future integration.
+pairs_rotation:
+  lookback: 60
+  adf_threshold: 0.05
+  min_half_life: 1.0
+  max_half_life: 30.0
+  z_entry: 2.0
+  max_pairs: 3
+
+sector_rotation:
+  btc_heavy_dominance_threshold: 0.57
+  large_alt_prefixes: [SOL, BNB, XRP, ADA, AVAX, DOT, MATIC, LINK, DOGE]
+
+sentiment:
+  fgi_extreme_fear: 25
+  fgi_fear: 35
+  fgi_greed: 75
+  fgi_extreme_greed: 80
+  multiplier_extreme_fear: 1.30
+  multiplier_fear: 1.15
+  multiplier_greed: 0.85
+  multiplier_extreme_greed: 0.70
+  funding_rate_bonus_threshold: -0.0001
+  funding_rate_bonus_pct: 0.02
 
 execution:
   prefer_limit_orders: true

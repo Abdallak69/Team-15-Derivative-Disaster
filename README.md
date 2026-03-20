@@ -71,5 +71,5 @@ python -m bot.main --backtest-core-modules --symbols BTCUSD,ETHUSD,SOLUSD --hist
 - `python -m bot.main --poll-once` bootstraps and persists one ticker poll without sending Telegram alerts. Use it as the smoke test before `systemd`.
 - `python -m bot.main --backtest-core-modules` fetches/caches Binance klines and evaluates only the first three modules from the strategy document. If local polling has already produced `data/bot_state.json`, omit `--symbols` to reuse that universe.
 - `python -m bot.main` starts the long-running polling loop used by the systemd service.
-- `runtime.strategy_mode` defaults to `disabled`. `paper` records explicit skeleton-only strategy cycles, and `live` is intentionally blocked until the full signal-to-risk-to-execution path exists.
-- Trading decision and execution modules are still lightweight placeholders and should not be treated as production-ready yet.
+- `runtime.strategy_mode` defaults to `disabled`. `paper` records strategy cycles in dry-run mode, and `live` sends real orders through the Roostoo API — ensure the full pipeline is verified in `paper` mode first.
+- All signal, risk, and execution modules are implemented. See `docs/TEAM_UPDATE.md` for current status.
